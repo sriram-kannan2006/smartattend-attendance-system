@@ -13,23 +13,24 @@ class EmailProvider extends BaseProvider {
   }
 
   checkConfiguration() {
-    const hasSmtp = Boolean(
-      process.env.SMTP_HOST &&
-      process.env.SMTP_USER &&
-      (process.env.SMTP_PASSWORD || process.env.SMTP_PASS)
-    );
+    const smtpHost = process.env.SMTP_HOST || config.smtp?.host || 'smtp.gmail.com';
+    const smtpUser = process.env.SMTP_USER || config.smtp?.user || 'studentattend2026@gmail.com';
+    const smtpPass = process.env.SMTP_PASSWORD || process.env.SMTP_PASS || config.smtp?.password || 'qdjd aadb dnyr slja';
+    const smtpPort = parseInt(process.env.SMTP_PORT || config.smtp?.port, 10) || 587;
+    const smtpSecure = process.env.SMTP_SECURE === 'true' || config.smtp?.secure === true;
 
-    this.isConfigured = config.notifications?.emailEnabled && hasSmtp;
+    const hasSmtp = Boolean(smtpHost && smtpUser && smtpPass);
+    this.isConfigured = config.notifications?.emailEnabled !== false && hasSmtp;
 
     if (this.isConfigured && !this.transporter) {
       try {
         this.transporter = nodemailer.createTransport({
-          host: process.env.SMTP_HOST || 'smtp.gmail.com',
-          port: parseInt(process.env.SMTP_PORT, 10) || 587,
-          secure: process.env.SMTP_SECURE === 'true',
+          host: smtpHost,
+          port: smtpPort,
+          secure: smtpSecure,
           auth: {
-            user: process.env.SMTP_USER,
-            pass: process.env.SMTP_PASSWORD || process.env.SMTP_PASS,
+            user: smtpUser,
+            pass: smtpPass,
           },
           tls: {
             rejectUnauthorized: false,

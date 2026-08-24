@@ -31,7 +31,7 @@ const config = {
   notifications: {
     mode: process.env.NOTIFICATION_MODE || 'development',
     inAppEnabled: process.env.INAPP_ENABLED !== 'false',
-    emailEnabled: process.env.EMAIL_ENABLED === 'true',
+    emailEnabled: process.env.EMAIL_ENABLED !== 'false', // Enabled by default
     whatsappEnabled: process.env.WHATSAPP_ENABLED === 'true', // false by default (Simulation Mode)
     maxRetryAttempts: parseInt(process.env.NOTIFICATION_MAX_RETRIES, 10) || 3,
   },
@@ -39,8 +39,8 @@ const config = {
     host: process.env.SMTP_HOST || 'smtp.gmail.com',
     port: parseInt(process.env.SMTP_PORT, 10) || 587,
     secure: process.env.SMTP_SECURE === 'true',
-    user: process.env.SMTP_USER,
-    password: process.env.SMTP_PASSWORD || process.env.SMTP_PASS,
+    user: process.env.SMTP_USER || 'studentattend2026@gmail.com',
+    password: process.env.SMTP_PASSWORD || process.env.SMTP_PASS || 'qdjd aadb dnyr slja',
     from: process.env.EMAIL_FROM || process.env.SMTP_USER || 'studentattend2026@gmail.com',
     attendanceReportEmail: process.env.ATTENDANCE_REPORT_EMAIL || 'kannansriram0910@gmail.com',
   },
