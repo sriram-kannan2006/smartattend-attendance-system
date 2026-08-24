@@ -19,7 +19,18 @@ exports.registerFace = asyncHandler(async (req, res, next) => {
     res.status(201).json({
       success: true,
       message: 'Face registered successfully',
-      data: result,
+      faceRegistered: true,
+      data: {
+        ...result,
+        faceRegistered: true,
+        student: {
+          id: student._id,
+          name: student.name,
+          registerNumber: student.registerNumber,
+          email: student.email,
+          faceRegistered: true,
+        },
+      },
     });
   } catch (error) {
     return next(new AppError(error.message, 400));

@@ -152,7 +152,10 @@ const loginUser = async (email, password, req = null) => {
     profile = await Teacher.findOne({ userId: user._id });
   } else if (user.role === 'STUDENT') {
     profile = await Student.findOne({ userId: user._id });
+    userResponse.faceRegistered = profile ? profile.faceRegistered : false;
+    userResponse.registerNumber = profile ? profile.registerNumber : '';
   }
+  userResponse.profile = profile;
 
   return { user: userResponse, profile, token, role: user.role };
 };
@@ -176,13 +179,20 @@ const studentLogin = async (email, password, req = null) => {
   user.lastLogin = new Date();
   await user.save({ validateBeforeSave: false });
 
-  const student = await Student.findOne({ userId: user._id });
+  const student = await Student.findOne({ userId: user._id })
+    .populate('departmentId', 'name code')
+    .populate('classId', 'name year');
   const token = user.getSignedJwt();
 
   await logAudit(user._id, 'STUDENT_LOGIN', 'User', user._id, { role: 'STUDENT' }, req);
 
   const userResponse = user.toObject();
   delete userResponse.password;
+
+  userResponse.profile = student;
+  userResponse.student = student;
+  userResponse.faceRegistered = student ? student.faceRegistered : false;
+  userResponse.registerNumber = student ? student.registerNumber : '';
 
   return {
     user: userResponse,
@@ -431,9 +441,12 @@ const googleStudentLogin = async (googleEmail, googleToken = null, portalRole = 
   let teacher = null;
 
   if (user.role === 'STUDENT') {
-    student = await Student.findOne({ userId: user._id });
+    student = await Student.findOne({ userId: user._id })
+      .populate('departmentId', 'name code')
+      .populate('classId', 'name year');
   } else if (user.role === 'TEACHER') {
-    teacher = await Teacher.findOne({ userId: user._id });
+    teacher = await Teacher.findOne({ userId: user._id })
+      .populate('departmentId', 'name code');
   }
 
   const token = user.getSignedJwt();
@@ -442,6 +455,15 @@ const googleStudentLogin = async (googleEmail, googleToken = null, portalRole = 
 
   const userResponse = user.toObject();
   delete userResponse.password;
+
+  if (student) {
+    userResponse.profile = student;
+    userResponse.student = student;
+    userResponse.faceRegistered = student.faceRegistered;
+    userResponse.registerNumber = student.registerNumber;
+  } else if (teacher) {
+    userResponse.profile = teacher;
+  }
 
   return {
     user: userResponse,

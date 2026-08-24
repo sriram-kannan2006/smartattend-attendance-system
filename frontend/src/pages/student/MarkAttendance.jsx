@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/Button';
 import { attendanceService } from '@/services/attendanceService';
 import FaceVerification from '@/components/FaceCamera/FaceVerification';
 import { useToast } from '@/context/ToastContext';
+import { useAuth } from '@/context/AuthContext';
 
 const steps = {
   START: 'START',
@@ -19,6 +20,7 @@ const steps = {
 };
 
 const MarkAttendance = () => {
+  const { user } = useAuth();
   const [currentStep, setCurrentStep] = useState(steps.START);
   const [authData, setAuthData] = useState(null);
   const [attendanceData, setAttendanceData] = useState(null);
@@ -27,7 +29,16 @@ const MarkAttendance = () => {
   const navigate = useNavigate();
   const { showSuccess, showError } = useToast();
 
-  const handleStart = () => setCurrentStep(steps.FACE_VERIFY);
+  const isFaceRegistered = user?.faceRegistered === true || user?.profile?.faceRegistered === true;
+
+  const handleStart = () => {
+    if (!isFaceRegistered) {
+      showError('Please register your face once before marking attendance.');
+      navigate('/student/face-registration');
+      return;
+    }
+    setCurrentStep(steps.FACE_VERIFY);
+  };
 
   const handleFaceVerified = (authId, expiresAt) => {
     const cleanId = typeof authId === 'object' && authId !== null ? authId.authenticationId || authId.id : authId;

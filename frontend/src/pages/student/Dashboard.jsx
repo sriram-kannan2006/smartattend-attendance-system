@@ -10,7 +10,7 @@ import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts';
 import { Camera, Calendar, Clock, BookOpen, AlertCircle, FileText, CheckCircle2, ArrowRight, ShieldCheck, Loader2, UserCheck, Sparkles, MapPin } from 'lucide-react';
 
 export default function StudentDashboard() {
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [scheduleLoading, setScheduleLoading] = useState(true);
@@ -22,9 +22,9 @@ export default function StudentDashboard() {
   });
 
   const studentProfile = user?.profile || user?.student || {};
-  const rollNumber = studentProfile?.registerNumber || user?.registerNumber || '24ECR177';
+  const rollNumber = studentProfile?.registerNumber || user?.registerNumber || '';
   const className = studentProfile?.classId?.name || 'ECE III Year - Section D';
-  const isFaceRegistered = user?.faceRegistered || studentProfile?.faceRegistered;
+  const isFaceRegistered = user?.faceRegistered === true || studentProfile?.faceRegistered === true;
 
   useEffect(() => {
     const fetchDashboard = async () => {
@@ -82,6 +82,15 @@ export default function StudentDashboard() {
     { name: 'Present', value: overall.percentage, color: '#2563EB' },
     { name: 'Absent', value: Math.max(0, 100 - overall.percentage), color: '#E2E8F0' },
   ];
+
+  if (authLoading && !user) {
+    return (
+      <div className="min-h-[60vh] flex flex-col items-center justify-center p-6 space-y-3">
+        <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+        <p className="text-xs font-semibold text-slate-500">Loading Student Records...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-6">

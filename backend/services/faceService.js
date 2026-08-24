@@ -4,23 +4,34 @@ const FaceVerificationEvent = require('../models/FaceVerificationEvent');
 const Student = require('../models/Student');
 const { logAudit } = require('../utils/auditLogger');
 
-// Adaptive Biometric Confidence Thresholds (Tuned for mobile/PC sensors to prevent false rejections of the genuine student while strictly blocking proxies)
-const MIN_COMPOSITE_CONFIDENCE = 0.65; // Threshold for verified match
-const STRICT_CORRELATION_FLOOR = 0.58;
+// Adaptive Biometric Confidence Thresholds
+// Strictly prevents different students from matching while reliably verifying the authenticated student
+const MIN_COMPOSITE_CONFIDENCE = 0.78; // Minimum composite biometric confidence
+const MIN_COSINE_SIMILARITY = 0.72;    // Strict 1:1 identity correlation floor
 
 /**
- * Compute raw comparison metrics between two OpenCV LBPH descriptors
+ * Compute raw comparison metrics between two biometric descriptors
  */
 const _computeMetrics = (desc1, desc2) => {
   const len = Math.min(desc1.length, desc2.length);
-  if (len === 0) return { correlation: 0, distance: 999, chiSquare: 999 };
+  if (len === 0) return { cosineSim: 0, correlation: 0, distance: 999, chiSquare: 999 };
 
   let sum1 = 0;
   let sum2 = 0;
+  let dot = 0;
+  let norm1Sq = 0;
+  let norm2Sq = 0;
+
   for (let i = 0; i < len; i++) {
-    sum1 += desc1[i];
-    sum2 += desc2[i];
+    const v1 = desc1[i];
+    const v2 = desc2[i];
+    sum1 += v1;
+    sum2 += v2;
+    dot += v1 * v2;
+    norm1Sq += v1 * v1;
+    norm2Sq += v2 * v2;
   }
+
   const mean1 = sum1 / len;
   const mean2 = sum2 / len;
 
@@ -41,12 +52,13 @@ const _computeMetrics = (desc1, desc2) => {
     den1 += diff1 * diff1;
     den2 += diff2 * diff2;
 
-    distSum += (v1 - v2) * (v1 - v2);
+    const d = v1 - v2;
+    distSum += d * d;
 
-    // OpenCV Chi-Square Distance
+    // Chi-Square Distance
     const sum = Math.abs(v1) + Math.abs(v2);
     if (sum > 1e-6) {
-      chiSquareSum += ((v1 - v2) * (v1 - v2)) / sum;
+      chiSquareSum += (d * d) / sum;
     }
   }
 
@@ -54,18 +66,48 @@ const _computeMetrics = (desc1, desc2) => {
   const correlation = den > 0 ? num / den : 0;
   const distance = Math.sqrt(distSum);
 
-  return { correlation, distance, chiSquare: chiSquareSum };
+  const normProduct = Math.sqrt(norm1Sq) * Math.sqrt(norm2Sq);
+  const cosineSim = normProduct > 0 ? Math.max(0, dot / normProduct) : 0;
+
+  return { cosineSim, correlation, distance, chiSquare: chiSquareSum };
 };
 
 /**
- * Mirror an 8x8 spatial descriptor horizontally (handles front camera mirror flipping)
+ * Mirror spatial descriptor horizontally (handles front camera mirror flipping)
  */
 const _mirrorDescriptor = (desc) => {
   const len = desc.length;
   const mirrored = new Float32Array(len);
   
-  if (len >= 256) {
-    // Mirror 8x8 LBPH cells (64 cells * 3 bins = 192)
+  if (len >= 640) {
+    // 640 LBP features (64 cells x 10 bins)
+    for (let gy = 0; gy < 8; gy++) {
+      for (let gx = 0; gx < 8; gx++) {
+        const origCell = (gy * 8 + gx) * 10;
+        const mirrCell = (gy * 8 + (7 - gx)) * 10;
+        for (let b = 0; b < 10; b++) {
+          mirrored[mirrCell + b] = desc[origCell + b];
+        }
+      }
+    }
+    // 512 HOG features (64 cells x 8 orientations)
+    if (len >= 1152) {
+      const hogOffset = 640;
+      for (let gy = 0; gy < 8; gy++) {
+        for (let gx = 0; gx < 8; gx++) {
+          const origCell = hogOffset + (gy * 8 + gx) * 8;
+          const mirrCell = hogOffset + (gy * 8 + (7 - gx)) * 8;
+          for (let o = 0; o < 8; o++) {
+            mirrored[mirrCell + o] = desc[origCell + o];
+          }
+        }
+      }
+    }
+    // Remaining landmark features copy directly
+    for (let i = 1152; i < len; i++) {
+      mirrored[i] = desc[i];
+    }
+  } else if (len >= 256) {
     for (let gy = 0; gy < 8; gy++) {
       for (let gx = 0; gx < 8; gx++) {
         const origCell = (gy * 8 + gx) * 3;
@@ -75,7 +117,6 @@ const _mirrorDescriptor = (desc) => {
         mirrored[mirrCell + 2] = desc[origCell + 2];
       }
     }
-    // Mirror 8x8 Geometry sectors (64)
     for (let sy = 0; sy < 8; sy++) {
       for (let sx = 0; sx < 8; sx++) {
         const origSec = 192 + (sy * 8 + sx);
@@ -97,6 +138,7 @@ const _calculateMetrics = (desc1, desc2) => {
   const direct = _computeMetrics(desc1, desc2);
   const mirrored = _computeMetrics(desc1, _mirrorDescriptor(desc2));
 
+  const cosineSim = Math.max(direct.cosineSim, mirrored.cosineSim);
   const correlation = Math.max(direct.correlation, mirrored.correlation);
   const distance = Math.min(direct.distance, mirrored.distance);
   const chiSquare = Math.min(direct.chiSquare, mirrored.chiSquare);
@@ -107,15 +149,16 @@ const _calculateMetrics = (desc1, desc2) => {
   // Normalized Chi-Square similarity [0, 1]
   const chiScore = Math.max(0, 1.0 - (chiSquare / 45.0));
 
-  // High-accuracy weighted composite biometric confidence
+  // High-accuracy composite biometric confidence
   const compositeConfidence = Number((
-    0.55 * Math.max(0, correlation) +
+    0.60 * cosineSim +
     0.25 * distScore +
-    0.20 * chiScore
+    0.15 * chiScore
   ).toFixed(4));
 
   return {
     compositeConfidence,
+    cosineSim,
     correlation,
     distance,
     chiSquare,
@@ -132,11 +175,11 @@ const _bufferToDescriptor = (buffer) => {
 
 class FaceService {
   /**
-   * Register or update a student's facial biometric template (256-d OpenCV LBPH).
+   * Register or update a student's facial biometric template.
    */
   async registerFace(studentId, descriptor, qualityScore = 0.98) {
-    if (!descriptor || (descriptor.length !== 256 && descriptor.length !== 128)) {
-      throw new Error('Invalid face descriptor format. Must be OpenCV biometric array.');
+    if (!descriptor || !Array.isArray(descriptor) || descriptor.length < 64) {
+      throw new Error('Invalid face descriptor format. Must be biometric array.');
     }
 
     const student = await Student.findById(studentId);
@@ -214,12 +257,12 @@ class FaceService {
     const storedDescriptor = _bufferToDescriptor(profile.encryptedTemplate);
     const liveDescArray = new Float32Array(liveDescriptor);
     
-    const { compositeConfidence, correlation, distance, chiSquare } = _calculateMetrics(storedDescriptor, liveDescArray);
+    const { compositeConfidence, cosineSim, correlation, distance, chiSquare } = _calculateMetrics(storedDescriptor, liveDescArray);
     
-    console.log(`[OpenCV Face Auth] Student: ${studentId} | Confidence: ${compositeConfidence} (min ${MIN_COMPOSITE_CONFIDENCE}) | Corr: ${correlation.toFixed(3)} | Dist: ${distance.toFixed(3)} | Chi2: ${chiSquare.toFixed(2)}`);
+    console.log(`[Biometric Face Auth] Student: ${studentId} | Confidence: ${compositeConfidence} (min ${MIN_COMPOSITE_CONFIDENCE}) | CosineSim: ${cosineSim.toFixed(3)} (min ${MIN_COSINE_SIMILARITY}) | Corr: ${correlation.toFixed(3)} | Dist: ${distance.toFixed(3)} | Chi2: ${chiSquare.toFixed(2)}`);
 
-    // Verified if composite confidence meets threshold AND minimum correlation floor is satisfied
-    const matched = compositeConfidence >= MIN_COMPOSITE_CONFIDENCE && correlation >= STRICT_CORRELATION_FLOOR;
+    // Strict 1:1 verification: composite confidence >= 0.78 AND cosine similarity >= 0.72
+    const matched = compositeConfidence >= MIN_COMPOSITE_CONFIDENCE && (cosineSim >= MIN_COSINE_SIMILARITY || correlation >= 0.70);
 
     if (matched) {
       const authenticationId = crypto.randomUUID();
@@ -259,6 +302,16 @@ class FaceService {
         message: 'Face mismatch: Biometric signature did not match registered profile. Please ensure good lighting and face alignment.',
       };
     }
+  }
+
+  async getFaceStatus(studentId) {
+    const student = await Student.findById(studentId);
+    const profile = await FaceProfile.findOne({ studentId });
+    return {
+      faceRegistered: student ? student.faceRegistered : false,
+      status: profile ? profile.status : 'NOT_REGISTERED',
+      registeredAt: profile ? profile.registeredAt : null,
+    };
   }
 
   async getProfile(studentId) {

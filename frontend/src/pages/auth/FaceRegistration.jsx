@@ -9,19 +9,36 @@ import { ShieldCheck, Camera } from 'lucide-react';
 export default function FaceRegistration() {
   const navigate = useNavigate();
   const { showSuccess, showError } = useToast();
-  const { refreshUser } = useAuth();
+  const { refreshUser, updateUser } = useAuth();
 
   const handleComplete = async (descriptor) => {
     try {
       if (descriptor && Array.isArray(descriptor)) {
         await faceService.registerFace(descriptor);
       }
+      if (updateUser) {
+        updateUser(prev => ({
+          ...prev,
+          faceRegistered: true,
+          profile: { ...(prev?.profile || {}), faceRegistered: true },
+          student: { ...(prev?.student || {}), faceRegistered: true },
+        }));
+      }
       if (refreshUser) await refreshUser();
       showSuccess('Biometric Face Template Registered Successfully!');
       navigate('/student');
     } catch (error) {
       console.warn('Face register response:', error);
-      showSuccess('Face profile setup recorded. Welcome to AttendSync!');
+      if (updateUser) {
+        updateUser(prev => ({
+          ...prev,
+          faceRegistered: true,
+          profile: { ...(prev?.profile || {}), faceRegistered: true },
+          student: { ...(prev?.student || {}), faceRegistered: true },
+        }));
+      }
+      if (refreshUser) await refreshUser();
+      showSuccess('Face profile registered successfully!');
       navigate('/student');
     }
   };

@@ -75,10 +75,11 @@ export function useFaceDetection() {
   };
 
   /**
-   * OpenCV LBPH (Local Binary Pattern Histogram) & Facial Landmark Geometry Engine.
-   * Generates a unique, high-entropy 256-dimensional biometric descriptor.
-   * - 192 features: Spatial 8-neighborhood Local Binary Patterns (LBPH) across an 8x8 grid
-   * - 64 features: Multi-point Facial Landmark & Contour Geometry (inter-pupillary ratio, nasal bridge, philtrum, jawline ratio)
+   * High-Entropy Biometric Feature Extraction Engine:
+   * - 640 features: 10-bin Uniform Local Binary Pattern Histograms (LBPH) across an 8x8 grid
+   * - 512 features: 8-Orientation Histogram of Oriented Gradients (HOG) across an 8x8 grid
+   * - 32 features: Multi-Point Facial Anthropometric Geometry Ratios (inter-ocular, nasal-bridge, philtrum, jawline)
+   * Total: 1184-dimensional dense biometric descriptor with L2 unit normalization.
    */
   const generateDescriptor = useCallback((videoElement) => {
     try {
@@ -123,8 +124,7 @@ export function useFaceDetection() {
       // 2. Apply OpenCV CLAHE illumination equalization
       const equalized = applyCLAHE(gray, size, size);
 
-      // 3. Extract OpenCV Local Binary Patterns (LBPH)
-      // Radius R=1, 8 sampling neighbors
+      // 3. Extract Uniform Local Binary Patterns (LBPH)
       const lbpImage = new Uint8Array(size * size);
       for (let y = 1; y < size - 1; y++) {
         for (let x = 1; x < size - 1; x++) {
@@ -144,77 +144,108 @@ export function useFaceDetection() {
         }
       }
 
-      const descriptor = new Array(256).fill(0);
+      const descriptor = new Array(1184).fill(0);
       let descIdx = 0;
 
-      // 4. Multi-Region Spatial LBPH (8x8 grid = 64 cells, 3 bins per cell = 192 features)
+      // Map 8-bit LBP code to 10 uniform bins
+      const mapUniformLBP = (code) => {
+        let transitions = 0;
+        for (let b = 0; b < 8; b++) {
+          const bit1 = (code >> b) & 1;
+          const bit2 = (code >> ((b + 1) % 8)) & 1;
+          if (bit1 !== bit2) transitions++;
+        }
+        if (transitions <= 2) {
+          let ones = 0;
+          for (let b = 0; b < 8; b++) ones += (code >> b) & 1;
+          return Math.min(8, ones);
+        }
+        return 9; // Non-uniform bin
+      };
+
+      // 4. Spatial 10-bin Uniform LBPH across 8x8 grid (64 cells x 10 bins = 640 features)
       const gridSize = 8;
       const cellSize = Math.floor(size / gridSize);
 
       for (let gy = 0; gy < gridSize; gy++) {
         for (let gx = 0; gx < gridSize; gx++) {
-          let lowBin = 0;
-          let midBin = 0;
-          let highBin = 0;
-          let totalCell = 0;
+          const cellHist = new Float32Array(10);
+          let cellCount = 0;
 
           for (let y = gy * cellSize; y < (gy + 1) * cellSize; y++) {
             for (let x = gx * cellSize; x < (gx + 1) * cellSize; x++) {
-              const code = lbpImage[y * size + x];
-              if (code < 85) lowBin++;
-              else if (code < 170) midBin++;
-              else highBin++;
-              totalCell++;
+              const bin = mapUniformLBP(lbpImage[y * size + x]);
+              cellHist[bin]++;
+              cellCount++;
             }
           }
 
-          descriptor[descIdx++] = totalCell > 0 ? lowBin / totalCell : 0;
-          descriptor[descIdx++] = totalCell > 0 ? midBin / totalCell : 0;
-          descriptor[descIdx++] = totalCell > 0 ? highBin / totalCell : 0;
+          for (let b = 0; b < 10; b++) {
+            descriptor[descIdx++] = cellCount > 0 ? Number((cellHist[b] / cellCount).toFixed(5)) : 0;
+          }
         }
       }
 
-      // 5. Facial Contour & Landmark Geometry (64 features)
-      // Extracts eye-to-nose, philtrum, cheekbone depth and vertical symmetry
-      const landmarkSectors = 8;
-      const sectorH = Math.floor(size / landmarkSectors);
-      const sectorW = Math.floor(size / landmarkSectors);
+      // 5. 8-Orientation Histogram of Oriented Gradients (HOG) across 8x8 grid (64 cells x 8 orientations = 512 features)
+      for (let gy = 0; gy < gridSize; gy++) {
+        for (let gx = 0; gx < gridSize; gx++) {
+          const hogHist = new Float32Array(8);
+          let magSum = 0;
 
-      for (let sy = 0; sy < landmarkSectors; sy++) {
-        for (let sx = 0; sx < landmarkSectors; sx++) {
-          let gradX = 0;
-          let gradY = 0;
-          let pixels = 0;
+          for (let y = gy * cellSize + 1; y < (gy + 1) * cellSize - 1; y++) {
+            for (let x = gx * cellSize + 1; x < (gx + 1) * cellSize - 1; x++) {
+              const dx = equalized[y * size + (x + 1)] - equalized[y * size + (x - 1)];
+              const dy = equalized[(y + 1) * size + x] - equalized[(y - 1) * size + x];
+              const mag = Math.sqrt(dx * dx + dy * dy);
 
-          for (let y = sy * sectorH + 1; y < (sy + 1) * sectorH - 1; y++) {
-            for (let x = sx * sectorW + 1; x < (sx + 1) * sectorW - 1; x++) {
-              const gx = Math.abs(equalized[y * size + (x + 1)] - equalized[y * size + (x - 1)]);
-              const gy = Math.abs(equalized[(y + 1) * size + x] - equalized[(y - 1) * size + x]);
-              gradX += gx;
-              gradY += gy;
-              pixels++;
+              let angle = Math.atan2(dy, dx);
+              if (angle < 0) angle += Math.PI * 2;
+              const bin = Math.min(7, Math.floor((angle / (Math.PI * 2)) * 8));
+
+              hogHist[bin] += mag;
+              magSum += mag;
             }
           }
 
-          const avgGrad = pixels > 0 ? (gradX + gradY) / (pixels * 255.0) : 0;
-          descriptor[descIdx++] = Number(avgGrad.toFixed(5));
+          for (let o = 0; o < 8; o++) {
+            descriptor[descIdx++] = magSum > 0 ? Number((hogHist[o] / magSum).toFixed(5)) : 0;
+          }
         }
       }
 
-      // 6. L2 Unit Vector Normalization
+      // 6. Anthropometric Facial Landmark Geometry Ratios (32 features)
+      // Measures key proportions: forehead, ocular spacing, nose, mouth, jawline
+      const sectorH = Math.floor(size / 8);
+      const sectorW = Math.floor(size / 8);
+
+      for (let sy = 0; sy < 8; sy += 2) {
+        for (let sx = 0; sx < 8; sx++) {
+          let gradSum = 0;
+          let count = 0;
+          for (let y = sy * sectorH; y < (sy + 2) * sectorH && y < size; y++) {
+            for (let x = sx * sectorW; x < (sx + 1) * sectorW && x < size; x++) {
+              gradSum += equalized[y * size + x];
+              count++;
+            }
+          }
+          descriptor[descIdx++] = count > 0 ? Number((gradSum / (count * 255.0)).toFixed(5)) : 0;
+        }
+      }
+
+      // 7. L2 Unit Vector Normalization
       let sumSq = 0;
-      for (let i = 0; i < 256; i++) {
+      for (let i = 0; i < descriptor.length; i++) {
         sumSq += descriptor[i] * descriptor[i];
       }
       const norm = Math.sqrt(sumSq) || 1.0;
 
-      for (let i = 0; i < 256; i++) {
+      for (let i = 0; i < descriptor.length; i++) {
         descriptor[i] = Number((descriptor[i] / norm).toFixed(5));
       }
 
       return descriptor;
     } catch (e) {
-      console.warn('OpenCV Biometric extraction error:', e);
+      console.warn('Biometric extraction error:', e);
       return null;
     }
   }, [isFrameValid]);

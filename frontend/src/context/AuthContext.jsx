@@ -47,15 +47,26 @@ export const AuthProvider = ({ children }) => {
     const res = await authService.login(email, password);
     const data = res?.data || res;
     const authToken = data.token;
-    const authUser = data.user;
+    const profileInfo = data.profile || data.user?.profile || data.student || data.teacher;
+    const isFaceReg = data.faceRegistered ?? data.user?.faceRegistered ?? profileInfo?.faceRegistered ?? false;
+
+    const mergedUser = {
+      ...(data.user || {}),
+      profile: profileInfo,
+      student: data.student || (data.user?.role === 'STUDENT' ? profileInfo : undefined),
+      teacher: data.teacher || (data.user?.role === 'TEACHER' ? profileInfo : undefined),
+      faceRegistered: isFaceReg,
+      registerNumber: profileInfo?.registerNumber || data.user?.registerNumber || '',
+    };
 
     if (authToken) {
       setToken(authToken);
       localStorage.setItem('token', authToken);
     }
-    if (authUser) {
-      setUser(authUser);
+    if (data.user) {
+      setUser(mergedUser);
     }
+    fetchUser();
     return data;
   };
 
@@ -63,15 +74,25 @@ export const AuthProvider = ({ children }) => {
     const res = await authService.studentLogin(email, password);
     const data = res?.data || res;
     const authToken = data.token;
-    const authUser = data.user;
+    const studentInfo = data.student || data.user?.student || data.user?.profile;
+    const isFaceReg = data.faceRegistered ?? data.user?.faceRegistered ?? studentInfo?.faceRegistered ?? false;
+
+    const mergedUser = {
+      ...(data.user || {}),
+      profile: studentInfo,
+      student: studentInfo,
+      faceRegistered: isFaceReg,
+      registerNumber: studentInfo?.registerNumber || data.user?.registerNumber || '',
+    };
 
     if (authToken) {
       setToken(authToken);
       localStorage.setItem('token', authToken);
     }
-    if (authUser) {
-      setUser(authUser);
+    if (data.user) {
+      setUser(mergedUser);
     }
+    fetchUser();
     return data;
   };
 
@@ -79,23 +100,43 @@ export const AuthProvider = ({ children }) => {
     const res = await authService.googleStudentLogin(email, googleToken, portalRole);
     const data = res?.data || res;
     const authToken = data.token;
-    const authUser = data.user;
+    const studentInfo = data.student || data.user?.student || data.user?.profile;
+    const isFaceReg = data.faceRegistered ?? data.user?.faceRegistered ?? studentInfo?.faceRegistered ?? false;
+
+    const mergedUser = {
+      ...(data.user || {}),
+      profile: studentInfo || data.user?.profile,
+      student: studentInfo,
+      teacher: data.teacher || data.user?.teacher,
+      faceRegistered: isFaceReg,
+      registerNumber: studentInfo?.registerNumber || data.user?.registerNumber || '',
+    };
 
     if (authToken) {
       setToken(authToken);
       localStorage.setItem('token', authToken);
     }
-    if (authUser) {
-      setUser(authUser);
+    if (data.user) {
+      setUser(mergedUser);
     }
+    fetchUser();
     return data;
   };
+
+  const updateUser = useCallback((updater) => {
+    setUser((prev) => {
+      if (typeof updater === 'function') {
+        return updater(prev);
+      }
+      return { ...prev, ...updater };
+    });
+  }, []);
 
   const changePassword = async (newPassword, confirmPassword) => {
     const res = await authService.changePassword(newPassword, confirmPassword);
     const data = res?.data || res;
     if (data.user) {
-      setUser(data.user);
+      setUser((prev) => ({ ...(prev || {}), ...(data.user || {}), passwordChangeRequired: false }));
     }
     return data;
   };
@@ -118,6 +159,7 @@ export const AuthProvider = ({ children }) => {
     if (authUser) {
       setUser(authUser);
     }
+    fetchUser();
     return data;
   };
 
@@ -146,6 +188,7 @@ export const AuthProvider = ({ children }) => {
     forgotPassword,
     register,
     logout,
+    updateUser,
     refreshUser: fetchUser,
   };
 
