@@ -1,4 +1,12 @@
 require('dotenv').config();
+const dns = require('dns');
+
+// Configure resilient DNS resolution for MongoDB Atlas SRV connection strings
+try {
+  dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
+} catch (e) {
+  // fallback
+}
 
 const config = {
   env: process.env.NODE_ENV || 'development',
