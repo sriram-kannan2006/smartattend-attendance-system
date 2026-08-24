@@ -51,6 +51,18 @@ export default function StudentLogin() {
 
   const handlePostLoginRedirect = (res) => {
     const data = res?.data || res;
+    const role = data?.role || data?.user?.role;
+
+    if (role === 'TEACHER') {
+      showSuccess(`Welcome Professor ${data?.user?.name || ''}!`);
+      navigate('/teacher/dashboard');
+      return;
+    } else if (role === 'ADMIN') {
+      showSuccess(`Welcome Administrator!`);
+      navigate('/admin/dashboard');
+      return;
+    }
+
     const isPasswordChangeRequired = data?.passwordChangeRequired === true;
     const isFaceRegistered = data?.faceRegistered === true || data?.user?.faceRegistered === true;
 
