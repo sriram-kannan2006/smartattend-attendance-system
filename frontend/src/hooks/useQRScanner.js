@@ -48,6 +48,20 @@ export const useQRScanner = () => {
       setResult(null);
       setIsScanning(true);
 
+      // 0. Explicitly trigger camera permission for Android WebViews / APKs
+      try {
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+          const testStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: 'environment' } }
+          });
+          testStream.getTracks().forEach(t => {
+            try { t.stop(); } catch (e) {}
+          });
+        }
+      } catch (permErr) {
+        console.warn("Direct getUserMedia test:", permErr);
+      }
+
       const scanner = new Html5Qrcode(containerId);
       html5QrCode.current = scanner;
 
