@@ -96,13 +96,15 @@ const startServer = async () => {
     // Initialize Socket.IO
     initializeSocket(server, app);
 
-    // Start listening
-    server.listen(config.port, () => {
+    // Start listening on all network interfaces (required for cloud hosting)
+    const host = '0.0.0.0';
+    server.listen(config.port, host, () => {
       console.log(`
 ╔════════════════════════════════════════════════╗
 ║          AttendSync API Server                 ║
 ║────────────────────────────────────────────────║
 ║  Environment : ${config.env.padEnd(30)}║
+║  Host        : ${host.padEnd(30)}║
 ║  Port        : ${String(config.port).padEnd(30)}║
 ║  Frontend    : ${config.frontendUrl.padEnd(30)}║
 ║  Socket.IO   : ${'Enabled'.padEnd(30)}║
