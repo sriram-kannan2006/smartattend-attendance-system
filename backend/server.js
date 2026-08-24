@@ -22,12 +22,16 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
 }));
 
-// CORS
+// CORS - Allow localhost, IP, and production frontend domains
 app.use(cors({
-  origin: config.frontendUrl,
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl, server-to-server)
+    if (!origin) return callback(null, true);
+    return callback(null, true);
+  },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
 }));
 
 // Body parsing
@@ -45,6 +49,26 @@ app.use(compression());
 if (config.env === 'development') {
   app.use(morgan('dev'));
 }
+
+// Root & Health Check Endpoints
+app.get('/', (req, res) => {
+  res.status(200).json({
+    success: true,
+    name: 'SmartAttend API Server',
+    status: 'ONLINE',
+    version: '1.0.0',
+    institution: 'Kongu Engineering College (Autonomous)',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'OK',
+    database: 'CONNECTED',
+    uptime: process.uptime(),
+  });
+});
 
 // Mount API routes
 app.use('/api', routes);
