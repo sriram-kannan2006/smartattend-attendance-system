@@ -77,7 +77,5 @@ const studentSchema = new mongoose.Schema(
 // Indexes for efficient queries
 studentSchema.index({ classId: 1 });
 studentSchema.index({ departmentId: 1 });
-studentSchema.index({ email: 1 });
-studentSchema.index({ registerNumber: 1 });
 
 module.exports = mongoose.model('Student', studentSchema);
