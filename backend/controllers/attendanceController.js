@@ -87,13 +87,19 @@ const scanAttendance = asyncHandler(async (req, res) => {
 
   // Emit real-time event (socket)
   if (req.app.get('io')) {
-    req.app.get('io').to(`session:${sessionId}`).emit('attendance:marked', {
+    const io = req.app.get('io');
+    const eventPayload = {
+      studentId: result.studentId,
       studentName: result.studentName,
       registerNumber: result.registerNumber,
       status: result.status,
       presentCount: result.presentCount,
       timestamp: new Date(),
-    });
+    };
+    io.to(`session:${sessionId}`).emit('attendance:marked', eventPayload);
+    if (result.sessionId) io.to(`session:${result.sessionId}`).emit('attendance:marked', eventPayload);
+    if (result.sessionMongoId) io.to(`session:${result.sessionMongoId}`).emit('attendance:marked', eventPayload);
+    io.emit('attendance:update', { sessionId, ...eventPayload });
   }
 
   res.status(200).json({

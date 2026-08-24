@@ -17,10 +17,12 @@ const initializeSocket = (server, app) => {
 
   const io = new Server(server, {
     cors: {
-      origin: config.frontendUrl,
+      origin: (origin, callback) => callback(null, true),
       methods: ['GET', 'POST'],
       credentials: true,
     },
+    transports: ['websocket', 'polling'],
+    allowEIO3: true,
     pingTimeout: 60000,
     pingInterval: 25000,
   });

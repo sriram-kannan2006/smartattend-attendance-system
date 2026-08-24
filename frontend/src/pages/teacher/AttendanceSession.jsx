@@ -95,15 +95,22 @@ export default function AttendanceSession() {
     }
   }, [sessionId]);
 
-  // Real-time student check-in updates
+  // Real-time student check-in updates via Socket.IO
   useEffect(() => {
     if (socket && sessionId) {
       socket.emit('session:join', sessionId);
+      if (session?._id && session._id !== sessionId) {
+        socket.emit('session:join', session._id);
+      }
+      if (session?.sessionId && session.sessionId !== sessionId) {
+        socket.emit('session:join', session.sessionId);
+      }
 
       const handleAttendanceMarked = (data) => {
+        if (!data?.studentName && !data?.registerNumber) return;
         setAttendees((prev) => [
           {
-            _id: `att_${Date.now()}`,
+            _id: `att_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
             studentId: {
               _id: data.studentId || data._id,
               name: data.studentName,
@@ -119,13 +126,40 @@ export default function AttendanceSession() {
       };
 
       socket.on('attendance:marked', handleAttendanceMarked);
+      socket.on('attendance:update', handleAttendanceMarked);
 
       return () => {
         socket.off('attendance:marked', handleAttendanceMarked);
+        socket.off('attendance:update', handleAttendanceMarked);
         socket.emit('session:leave', sessionId);
       };
     }
-  }, [socket, sessionId, showSuccess]);
+  }, [socket, sessionId, session?._id, session?.sessionId, showSuccess]);
+
+  // Seamless Background Live Poll (Every 2.5s while session is active)
+  useEffect(() => {
+    if (!sessionId || isClosed) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await attendanceService.getSession(sessionId);
+        const data = res?.data?.data || res?.data || res;
+        if (data?.session) {
+          setSession((prev) => ({ ...prev, ...data.session }));
+          if (data.records || data.attendance) {
+            setAttendees(data.records || data.attendance);
+          }
+          if (data.session.status === 'CLOSED') {
+            setIsClosed(true);
+          }
+        }
+      } catch (e) {
+        // silent background sync
+      }
+    }, 2500);
+
+    return () => clearInterval(interval);
+  }, [sessionId, isClosed]);
 
   // Map of studentId -> attendance record
   const attendanceMap = useMemo(() => {

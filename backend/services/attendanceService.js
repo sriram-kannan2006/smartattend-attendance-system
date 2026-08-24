@@ -266,10 +266,14 @@ const markPresent = async (scanData, req = null) => {
   return {
     attendance,
     status,
+    studentId: student._id,
     studentName: student.name,
     registerNumber: student.registerNumber,
     sessionId: session.sessionId,
+    sessionMongoId: session._id,
+    sessionIdString: session.sessionId,
     presentCount: session.presentCount,
+    totalStudents: session.totalStudents || 61,
   };
 };
 
@@ -283,20 +287,22 @@ const markPresent = async (scanData, req = null) => {
  * @returns {Object} Final attendance statistics
  */
 const finalizeAttendance = async (sessionMongoId, teacherUserId, req = null) => {
-  const session = await AttendanceSession.findById(sessionMongoId)
-    .populate('classId', 'name year departmentId')
-    .populate('subjectId', 'name code departmentId')
-    .populate('teacherId', 'name email phone');
+  const sessionDoc = await qrService.findSession(sessionMongoId);
 
-  if (!session) {
-    throw new AppError('Session not found.', 404);
+  if (!sessionDoc) {
+    throw new AppError('Attendance session not found.', 404);
   }
 
-  // Verify teacher owns this session or is authorized faculty/admin
+  const session = await AttendanceSession.findById(sessionDoc._id)
+    .populate('classId', 'name year departmentId')
+    .populate('subjectId', 'name code')
+    .populate('teacherId', 'name email');
+
+  // Verify ownership
   const teacher = await Teacher.findOne({ userId: teacherUserId });
   const user = await User.findById(teacherUserId);
-  const sessionTeacherId = session.teacherId?._id || session.teacherId;
 
+  const sessionTeacherId = session.teacherId?._id || session.teacherId;
   const isOwner = teacher && sessionTeacherId.toString() === teacher._id.toString();
   const isAuthorized = isOwner || (user && (user.role === 'ADMIN' || user.role === 'TEACHER'));
 
@@ -381,9 +387,9 @@ const finalizeAttendance = async (sessionMongoId, teacherUserId, req = null) => 
     console.warn('[AttendanceService] Excel generation notice for notification:', repErr.message);
   }
 
-  // Trigger Notification Engine (Asynchronous & Non-blocking: failures never break attendance finalization)
+  // Trigger Notification Engine (Awaited so SMTP delivery completes reliably)
   try {
-    notificationEngine.triggerAttendanceFinalized({
+    await notificationEngine.triggerAttendanceFinalized({
       sessionId: session._id,
       session,
       teacher,
@@ -400,9 +406,9 @@ const finalizeAttendance = async (sessionMongoId, teacherUserId, req = null) => 
           ? Math.round((finalPresent / classStudents.length) * 100)
           : 0,
       },
-    }).catch(err => console.warn('[NotificationEngine] Async dispatch error (non-blocking):', err.message));
+    });
   } catch (notifErr) {
-    console.warn('[NotificationEngine] Trigger call error (non-blocking):', notifErr.message);
+    console.warn('[NotificationEngine] Trigger call warning:', notifErr.message);
   }
 
   return {
