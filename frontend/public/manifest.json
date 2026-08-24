@@ -1,0 +1,24 @@
+{
+  "short_name": "SmartAttend",
+  "name": "KEC SmartAttend - Attendance & Notification System",
+  "description": "Intelligent AI-Powered Attendance & Multi-Channel Notification Platform for Kongu Engineering College",
+  "icons": [
+    {
+      "src": "/kec-logo.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/kec-logo.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/student/login",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "display": "standalone",
+  "orientation": "portrait"
+}
