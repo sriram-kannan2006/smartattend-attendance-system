@@ -613,6 +613,61 @@ ${odStudentNames.length > 0 ? odStudentNames.map((n, i) => `${i + 1}. ${n}`).joi
       totalPages: Math.ceil(total / limit),
     };
   }
+
+  /**
+   * Send instant check-in confirmation email when attendance is marked by a student.
+   */
+  async triggerAttendanceMarked({ student, session, attendance, status = 'PRESENT' }) {
+    try {
+      const emailProvider = this.getProvider('EMAIL') || new EmailProvider();
+      const className = session?.classId?.name || 'ECE III Year - Section D';
+      const subjectName = session?.subjectId?.name || 'Subject';
+      const hour = session?.hour || 1;
+      const studentName = student?.name || 'Student';
+      const regNo = student?.registerNumber || '';
+      const recipientEmails = new Set();
+
+      const defaultReportEmail = process.env.ATTENDANCE_REPORT_EMAIL || config.smtp?.attendanceReportEmail || 'kannansriram0910@gmail.com';
+      if (defaultReportEmail) recipientEmails.add(defaultReportEmail);
+      if (student?.email) recipientEmails.add(student.email);
+
+      const htmlBody = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #e2e8f0; border-radius: 12px; padding: 24px; color: #1e293b; background-color: #ffffff;">
+          <div style="background-color: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 8px; padding: 14px; margin-bottom: 18px;">
+            <h3 style="color: #065f46; margin: 0; font-size: 16px;">✓ Attendance Marked Successfully</h3>
+            <p style="color: #047857; margin: 4px 0 0 0; font-size: 13px;">Face Biometric Verified & Classroom QR Authenticated</p>
+          </div>
+          <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+            <tr><td style="padding: 6px 0; font-weight: bold; width: 35%; color: #475569;">Student Name:</td><td style="color: #0f172a; font-weight: 600;">${studentName}</td></tr>
+            <tr><td style="padding: 6px 0; font-weight: bold; color: #475569;">Register Number:</td><td style="color: #0f172a; font-weight: 600;">${regNo}</td></tr>
+            <tr><td style="padding: 6px 0; font-weight: bold; color: #475569;">Class:</td><td style="color: #0f172a; font-weight: 600;">${className}</td></tr>
+            <tr><td style="padding: 6px 0; font-weight: bold; color: #475569;">Subject:</td><td style="color: #0f172a; font-weight: 600;">${subjectName} (Hour ${hour})</td></tr>
+            <tr><td style="padding: 6px 0; font-weight: bold; color: #475569;">Status:</td><td style="color: #059669; font-weight: bold;">${status}</td></tr>
+            <tr><td style="padding: 6px 0; font-weight: bold; color: #475569;">Time:</td><td style="color: #0f172a;">${new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })}</td></tr>
+          </table>
+          <p style="margin-top: 20px; font-size: 12px; color: #64748b; border-top: 1px solid #e2e8f0; padding-top: 12px;">
+            SmartAttend Anti-Proxy System — Kongu Engineering College (Autonomous)
+          </p>
+        </div>
+      `;
+
+      const textBody = `Attendance Marked Successfully!\n\nStudent: ${studentName} (${regNo})\nClass: ${className}\nSubject: ${subjectName} (Hour ${hour})\nStatus: ${status}\nTime: ${new Date().toLocaleTimeString('en-IN')}`;
+
+      for (const email of recipientEmails) {
+        emailProvider.send({
+          recipientAddress: email,
+          payload: {
+            subject: `✓ Attendance Marked: ${studentName} (${regNo}) — ${subjectName}`,
+            title: `Attendance Confirmation`,
+            body: textBody,
+            html: htmlBody,
+          }
+        }).catch(err => console.warn(`[NotificationEngine] Check-in email error for ${email}:`, err.message));
+      }
+    } catch (err) {
+      console.warn('[NotificationEngine] triggerAttendanceMarked error:', err.message);
+    }
+  }
 }
 
 module.exports = new NotificationEngine();

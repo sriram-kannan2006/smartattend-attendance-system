@@ -257,11 +257,22 @@ const markPresent = async (scanData, req = null) => {
   await session.save();
 
   // STEP 11: Audit log
-  await logAudit(studentUserId, 'ATTENDANCE_MARK', 'Attendance', attendance._id, {
-    sessionId: session.sessionId,
-    status,
-    hour: session.hour,
-  }, req);
+  // STEP 12: Trigger instant check-in confirmation email
+  try {
+    const populatedSession = await AttendanceSession.findById(session._id)
+      .populate('classId', 'name year')
+      .populate('subjectId', 'name code')
+      .populate('teacherId', 'name email');
+    
+    notificationEngine.triggerAttendanceMarked({
+      student,
+      session: populatedSession || session,
+      attendance,
+      status,
+    });
+  } catch (emailErr) {
+    console.warn('[AttendanceService] Check-in email notice:', emailErr.message);
+  }
 
   return {
     attendance,
