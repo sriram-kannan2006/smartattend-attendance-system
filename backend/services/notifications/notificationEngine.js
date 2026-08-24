@@ -236,7 +236,7 @@ class NotificationEngine {
    * Dispatches notifications for absent students and generates EXACTLY ONE HOD summary.
    */
   async triggerAttendanceFinalized(data) {
-    const { session, teacher, absentStudentIds = [], reportFilePath, reportFilename, stats = {} } = data;
+    const { session, teacher, absentStudentIds = [], reportFilePath, reportFilename, reportBuffer, stats = {} } = data;
     if (!session) return;
 
     const className = session.classId?.name || 'ECE III Year - Section D';
@@ -343,54 +343,62 @@ ${odStudentNames.length > 0 ? odStudentNames.map((n, i) => `${i + 1}. ${n}`).joi
       </div>
     `;
 
-    // 1. Dispatch Attendance Report Email to designated recipient
+    // 1. Dispatch Attendance Report Email to designated recipient(s)
     const reportEmail = process.env.ATTENDANCE_REPORT_EMAIL || config.smtp?.attendanceReportEmail || 'kannansriram0910@gmail.com';
-    if (config.notifications?.emailEnabled !== false && reportEmail) {
+    const recipientEmails = new Set();
+    if (reportEmail) recipientEmails.add(reportEmail);
+    if (teacher?.email) recipientEmails.add(teacher.email);
+    if (session.teacherId?.email) recipientEmails.add(session.teacherId.email);
+
+    if (config.notifications?.emailEnabled !== false && recipientEmails.size > 0) {
       try {
-        console.log(`[NotificationEngine] Dispatching Attendance Report Email to: ${reportEmail}`);
         const emailProvider = this.getProvider('EMAIL') || new EmailProvider();
-        const sendResult = await emailProvider.send({
-          recipientAddress: reportEmail,
-          payload: {
-            subject: `Attendance Report: ${className} - Hour ${hour} (${subjectName})`,
-            title: `Attendance Report: ${className}`,
-            body: emailText,
-            html: emailHtml,
-            attachmentPath: reportFilePath,
-            attachmentName: reportFilename || `${className.replace(/[^a-zA-Z0-9]/g, '_')}_Hour_${hour}_Report.xlsx`,
-            className,
-            year,
-            hour,
-            classTakenBy,
-            subjectName,
-            presentCount,
-            absentStudentNames,
-            odStudentNames,
-          },
-        });
+        for (const targetEmail of recipientEmails) {
+          console.log(`[NotificationEngine] Dispatching Attendance Report Email to: ${targetEmail}`);
+          const sendResult = await emailProvider.send({
+            recipientAddress: targetEmail,
+            payload: {
+              subject: `Attendance Report: ${className} - Hour ${hour} (${subjectName})`,
+              title: `Attendance Report: ${className}`,
+              body: emailText,
+              html: emailHtml,
+              attachmentBuffer: reportBuffer || null,
+              attachmentPath: reportFilePath || null,
+              attachmentName: reportFilename || `${className.replace(/[^a-zA-Z0-9]/g, '_')}_Hour_${hour}_Report.xlsx`,
+              className,
+              year,
+              hour,
+              classTakenBy,
+              subjectName,
+              presentCount,
+              absentStudentNames,
+              odStudentNames,
+            },
+          });
 
-        console.log(`[NotificationEngine] Attendance Report Email Dispatch Status: ${sendResult?.status} (Success: ${sendResult?.success})`);
+          console.log(`[NotificationEngine] Attendance Report Email to ${targetEmail} Status: ${sendResult?.status} (Success: ${sendResult?.success})`);
 
-        // Record Job in Database for reporting/audit
-        await NotificationJob.create({
-          jobId: `NJOB-${uuidv4().slice(0, 8).toUpperCase()}`,
-          type: 'HOD_ATTENDANCE_SUMMARY',
-          channel: 'EMAIL',
-          recipientRole: 'ADMIN',
-          recipientAddress: reportEmail,
-          templateId: 'hod_attendance_summary_email',
-          payload: {
-            subject: `Attendance Report: ${className} - Hour ${hour} (${subjectName})`,
-            className,
-            hour,
-            subjectName,
-            presentCount,
-          },
-          status: sendResult?.success ? 'SENT' : 'FAILED',
-          deliveredAt: sendResult?.success ? new Date() : null,
-          error: sendResult?.error || null,
-          providerResponse: sendResult?.providerResponse || null,
-        }).catch(() => {});
+          // Record Job in Database for reporting/audit
+          await NotificationJob.create({
+            jobId: `NJOB-${uuidv4().slice(0, 8).toUpperCase()}`,
+            type: 'HOD_ATTENDANCE_SUMMARY',
+            channel: 'EMAIL',
+            recipientRole: targetEmail === reportEmail ? 'ADMIN' : 'TEACHER',
+            recipientAddress: targetEmail,
+            templateId: 'hod_attendance_summary_email',
+            payload: {
+              subject: `Attendance Report: ${className} - Hour ${hour} (${subjectName})`,
+              className,
+              hour,
+              subjectName,
+              presentCount,
+            },
+            status: sendResult?.success ? 'SENT' : 'FAILED',
+            deliveredAt: sendResult?.success ? new Date() : null,
+            error: sendResult?.error || null,
+            providerResponse: sendResult?.providerResponse || null,
+          }).catch(() => {});
+        }
       } catch (emailErr) {
         console.error('[NotificationEngine] Attendance report email error:', emailErr.message);
         notificationLogger.error({ type: 'EMAIL_REPORT', recipient: reportEmail }, emailErr);

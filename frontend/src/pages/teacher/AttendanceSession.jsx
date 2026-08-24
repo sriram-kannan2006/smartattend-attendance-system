@@ -227,12 +227,10 @@ export default function AttendanceSession() {
       setCloseResult(data);
       setIsClosed(true);
       setShowCloseModal(false);
-      showSuccess('Attendance session finalized and all absentees recorded in database!');
+      showSuccess('Attendance session finalized & official Excel report emailed successfully!');
     } catch (err) {
       console.error('Failed to close session:', err);
-      setIsClosed(true);
-      setShowCloseModal(false);
-      showSuccess('Attendance session closed.');
+      showError(err.response?.data?.message || 'Error finalizing session. Please try again.');
     } finally {
       setIsClosing(false);
     }

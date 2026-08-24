@@ -99,14 +99,26 @@ class EmailProvider extends BaseProvider {
 
       // Handle file attachments (e.g. session Excel report)
       const attachments = [];
-      if (job.payload?.attachmentPath && fs.existsSync(job.payload.attachmentPath)) {
+      if (job.payload?.attachmentBuffer) {
+        attachments.push({
+          filename: job.payload.attachmentName || 'KEC_Attendance_Report.xlsx',
+          content: Buffer.isBuffer(job.payload.attachmentBuffer) ? job.payload.attachmentBuffer : Buffer.from(job.payload.attachmentBuffer),
+          contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        });
+      } else if (job.payload?.attachmentPath && fs.existsSync(job.payload.attachmentPath)) {
         attachments.push({
           filename: job.payload.attachmentName || path.basename(job.payload.attachmentPath),
           path: job.payload.attachmentPath,
         });
       } else if (job.payload?.attachments && Array.isArray(job.payload.attachments)) {
         for (const att of job.payload.attachments) {
-          if (att.path && fs.existsSync(att.path)) {
+          if (att.content) {
+            attachments.push({
+              filename: att.filename || 'Attachment.xlsx',
+              content: att.content,
+              contentType: att.contentType || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            });
+          } else if (att.path && fs.existsSync(att.path)) {
             attachments.push({
               filename: att.filename || path.basename(att.path),
               path: att.path,

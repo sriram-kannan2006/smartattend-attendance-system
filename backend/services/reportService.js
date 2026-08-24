@@ -243,9 +243,14 @@ const generateSessionReport = async (sessionMongoId, generatedByUserId, req = nu
   const dateStr = new Date(session.date).toISOString().slice(0, 10);
   const fileName = `KEC_${className}_${subjectName}_Hour-${session.hour}_${dateStr}.xlsx`;
 
-  // Save file
+  // Generate in-memory Excel buffer and file
+  const buffer = await workbook.xlsx.writeBuffer();
   const filePath = path.join(REPORTS_DIR, fileName);
-  await workbook.xlsx.writeFile(filePath);
+  try {
+    await workbook.xlsx.writeFile(filePath);
+  } catch (fsErr) {
+    console.warn('[ReportService] File write notice:', fsErr.message);
+  }
 
   // Create report record
   const reportId = `RPT-${uuidv4().slice(0, 8).toUpperCase()}`;
@@ -280,6 +285,9 @@ const generateSessionReport = async (sessionMongoId, generatedByUserId, req = nu
 
   return {
     report,
+    filePath,
+    fileName,
+    buffer,
     stats: {
       totalStudents,
       present: presentCount,

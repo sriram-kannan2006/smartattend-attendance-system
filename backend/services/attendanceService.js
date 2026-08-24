@@ -321,9 +321,8 @@ const finalizeAttendance = async (sessionMongoId, teacherUserId, req = null) => 
     throw new AppError('Not authorized to close this session.', 403);
   }
 
-  if (session.status === 'CLOSED') {
-    throw new AppError('Session is already closed.', 400);
-  }
+  // If session is already closed, still allow re-sending finalized report
+  const isAlreadyClosed = session.status === 'CLOSED';
 
   // Get all students in the class
   const classStudents = await Student.find({ classId: session.classId, isActive: true });
@@ -341,28 +340,28 @@ const finalizeAttendance = async (sessionMongoId, teacherUserId, req = null) => 
   });
   const odStudentIds = new Set(odRecords.map((r) => r.studentId.toString()));
 
-  // Mark absent students (not present and not on OD)
+  // Mark absent students (not present and not on OD) if not already marked
   const absentRecords = [];
-  for (const student of classStudents) {
-    if (!markedStudentIds.has(student._id.toString())) {
-      // Check if student is on approved OD
-      const isOD = odStudentIds.has(student._id.toString());
-
-      const record = await Attendance.create({
-        studentId: student._id,
-        sessionId: session._id,
-        classId: session.classId,
-        subjectId: session.subjectId,
-        teacherId: session.teacherId,
-        date: session.date,
-        hour: session.hour,
-        status: isOD ? 'OD' : 'ABSENT',
-      });
-
-      if (!isOD) {
-        absentRecords.push(record);
+  if (!isAlreadyClosed) {
+    for (const student of classStudents) {
+      if (!markedStudentIds.has(student._id.toString())) {
+        const isOD = odStudentIds.has(student._id.toString());
+        const record = await Attendance.create({
+          studentId: student._id,
+          sessionId: session._id,
+          classId: session.classId,
+          subjectId: session.subjectId,
+          teacherId: session.teacherId,
+          date: session.date,
+          hour: session.hour,
+          status: isOD ? 'OD' : 'ABSENT',
+        });
+        if (!isOD) absentRecords.push(record);
       }
     }
+  } else {
+    const existingAbsents = await Attendance.find({ sessionId: session._id, status: 'ABSENT' });
+    absentRecords.push(...existingAbsents);
   }
 
   // Calculate final statistics
@@ -372,7 +371,7 @@ const finalizeAttendance = async (sessionMongoId, teacherUserId, req = null) => 
 
   // Update session
   session.status = 'CLOSED';
-  session.closedAt = new Date();
+  session.closedAt = session.closedAt || new Date();
   session.presentCount = finalPresent;
   session.absentCount = finalAbsent;
   session.odCount = finalOD;
@@ -390,10 +389,12 @@ const finalizeAttendance = async (sessionMongoId, teacherUserId, req = null) => 
   // Generate Excel report for attachment
   let reportFilePath = null;
   let reportFilename = null;
+  let reportBuffer = null;
   try {
     const reportResult = await reportService.generateSessionReport(session._id, teacherUserId);
     reportFilePath = reportResult.report?.filePath || reportResult.filePath;
     reportFilename = reportResult.report?.fileName || reportResult.report?.filename || reportResult.fileName;
+    reportBuffer = reportResult.buffer || null;
   } catch (repErr) {
     console.warn('[AttendanceService] Excel generation notice for notification:', repErr.message);
   }
@@ -408,6 +409,7 @@ const finalizeAttendance = async (sessionMongoId, teacherUserId, req = null) => 
       absentStudentIds: absentRecords.map(r => r.studentId),
       reportFilePath,
       reportFilename,
+      reportBuffer,
       stats: {
         totalStudents: classStudents.length,
         present: finalPresent,
