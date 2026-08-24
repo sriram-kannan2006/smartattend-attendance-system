@@ -375,8 +375,8 @@ const finalizeAttendance = async (sessionMongoId, teacherUserId, req = null) => 
   let reportFilename = null;
   try {
     const reportResult = await reportService.generateSessionReport(session._id, teacherUserId);
-    reportFilePath = reportResult.report?.filePath;
-    reportFilename = reportResult.report?.filename;
+    reportFilePath = reportResult.report?.filePath || reportResult.filePath;
+    reportFilename = reportResult.report?.fileName || reportResult.report?.filename || reportResult.fileName;
   } catch (repErr) {
     console.warn('[AttendanceService] Excel generation notice for notification:', repErr.message);
   }

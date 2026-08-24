@@ -9,6 +9,7 @@ const http = require('http');
 
 const config = require('./config');
 const connectDB = require('./config/db');
+require('./models'); // Register all Mongoose schemas on startup
 const routes = require('./routes');
 const errorHandler = require('./middleware/errorHandler');
 const { initializeSocket } = require('./services/socketService');

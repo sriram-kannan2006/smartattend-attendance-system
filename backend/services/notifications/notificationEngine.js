@@ -1,4 +1,5 @@
 const { v4: uuidv4 } = require('uuid');
+require('../../models'); // Ensure all Mongoose models are registered
 const NotificationJob = require('../../models/NotificationJob');
 const NotificationRule = require('../../models/NotificationRule');
 const Attendance = require('../../models/Attendance');
@@ -343,14 +344,13 @@ ${odStudentNames.length > 0 ? odStudentNames.map((n, i) => `${i + 1}. ${n}`).joi
     `;
 
     // 1. Dispatch Attendance Report Email to designated recipient
-    const reportEmail = process.env.ATTENDANCE_REPORT_EMAIL || 'kannansriram0910@gmail.com';
-    if (config.notifications?.emailEnabled && reportEmail) {
+    const reportEmail = process.env.ATTENDANCE_REPORT_EMAIL || config.smtp?.attendanceReportEmail || 'kannansriram0910@gmail.com';
+    if (config.notifications?.emailEnabled !== false && reportEmail) {
       try {
-        await this.trigger({
-          type: 'HOD_ATTENDANCE_SUMMARY',
-          channels: ['EMAIL'],
+        console.log(`[NotificationEngine] Dispatching Attendance Report Email to: ${reportEmail}`);
+        const emailProvider = this.getProvider('EMAIL') || new EmailProvider();
+        const sendResult = await emailProvider.send({
           recipientAddress: reportEmail,
-          recipientRole: 'ADMIN',
           payload: {
             subject: `Attendance Report: ${className} - Hour ${hour} (${subjectName})`,
             title: `Attendance Report: ${className}`,
@@ -368,7 +368,31 @@ ${odStudentNames.length > 0 ? odStudentNames.map((n, i) => `${i + 1}. ${n}`).joi
             odStudentNames,
           },
         });
+
+        console.log(`[NotificationEngine] Attendance Report Email Dispatch Status: ${sendResult?.status} (Success: ${sendResult?.success})`);
+
+        // Record Job in Database for reporting/audit
+        await NotificationJob.create({
+          jobId: `NJOB-${uuidv4().slice(0, 8).toUpperCase()}`,
+          type: 'HOD_ATTENDANCE_SUMMARY',
+          channel: 'EMAIL',
+          recipientRole: 'ADMIN',
+          recipientAddress: reportEmail,
+          templateId: 'hod_attendance_summary_email',
+          payload: {
+            subject: `Attendance Report: ${className} - Hour ${hour} (${subjectName})`,
+            className,
+            hour,
+            subjectName,
+            presentCount,
+          },
+          status: sendResult?.success ? 'SENT' : 'FAILED',
+          deliveredAt: sendResult?.success ? new Date() : null,
+          error: sendResult?.error || null,
+          providerResponse: sendResult?.providerResponse || null,
+        }).catch(() => {});
       } catch (emailErr) {
+        console.error('[NotificationEngine] Attendance report email error:', emailErr.message);
         notificationLogger.error({ type: 'EMAIL_REPORT', recipient: reportEmail }, emailErr);
       }
     }
