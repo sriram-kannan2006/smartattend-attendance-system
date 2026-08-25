@@ -363,7 +363,11 @@ export default function AttendanceSession() {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left Column: Projector Mode Dynamic QR Display */}
         <div className="lg:col-span-7">
-          <QRDisplay sessionId={sessionId} sessionDetails={session} />
+          <QRDisplay
+            sessionId={sessionId}
+            sessionDetails={session}
+            isClosed={isClosed || session?.status === 'CLOSED'}
+          />
         </div>
 
         {/* Right Column: Real-Time Attendance Statistics */}

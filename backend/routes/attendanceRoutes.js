@@ -55,7 +55,7 @@ router.post(
 
 router.post(
   '/session/:id/close',
-  authorize('TEACHER'),
+  authorize('TEACHER', 'ADMIN'),
   ctrl.closeSession
 );
 
