@@ -79,26 +79,14 @@ class EmailProvider extends BaseProvider {
     }
   }
 
-  async getTransporter() {
+  async getTransporter(targetHost = '74.125.130.108') {
     const smtpHost = process.env.SMTP_HOST || config.smtp?.host || 'smtp.gmail.com';
     const smtpUser = process.env.SMTP_USER || config.smtp?.user || 'studentattend2026@gmail.com';
     const smtpPass = process.env.SMTP_PASSWORD || process.env.SMTP_PASS || config.smtp?.password || 'qdjd aadb dnyr slja';
     const isGmail = smtpHost.includes('gmail.com') || (!smtpHost && smtpUser.includes('@gmail.com'));
 
-    let targetHost = smtpHost;
-    try {
-      targetHost = await new Promise((resolve) => {
-        dns.lookup(smtpHost, { family: 4 }, (err, address) => {
-          if (err || !address) resolve(smtpHost);
-          else resolve(address);
-        });
-      });
-    } catch (e) {
-      targetHost = smtpHost;
-    }
-
     const transportOptions = {
-      host: targetHost,
+      host: isGmail ? targetHost : smtpHost,
       port: 465,
       secure: true,
       auth: {
@@ -109,9 +97,9 @@ class EmailProvider extends BaseProvider {
         servername: isGmail ? 'smtp.gmail.com' : smtpHost,
         rejectUnauthorized: false,
       },
-      connectionTimeout: 15000,
-      greetingTimeout: 15000,
-      socketTimeout: 20000,
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 15000,
     };
 
     return nodemailer.createTransport(transportOptions);
@@ -165,77 +153,76 @@ class EmailProvider extends BaseProvider {
       };
     }
 
-    try {
-      const transporter = await this.getTransporter();
-      const recipient = job.recipientAddress || job.payload?.recipientEmail;
-      const subject = job.payload?.subject || job.payload?.title || 'Attendance Session Report — Kongu Engineering College';
-      const textBody = job.payload?.body || job.payload?.message || '';
-      const htmlBody = job.payload?.html || null;
+    const recipient = job.recipientAddress || job.payload?.recipientEmail;
+    const subject = job.payload?.subject || job.payload?.title || 'Attendance Session Report — Kongu Engineering College';
+    const textBody = job.payload?.body || job.payload?.message || '';
+    const htmlBody = job.payload?.html || null;
 
-      // Handle file attachments (e.g. session Excel report)
-      const attachments = [];
-      if (job.payload?.attachmentBuffer) {
-        attachments.push({
-          filename: job.payload.attachmentName || 'KEC_Attendance_Report.xlsx',
-          content: Buffer.isBuffer(job.payload.attachmentBuffer) ? job.payload.attachmentBuffer : Buffer.from(job.payload.attachmentBuffer),
-          contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        });
-      } else if (job.payload?.attachmentPath && fs.existsSync(job.payload.attachmentPath)) {
-        attachments.push({
-          filename: job.payload.attachmentName || path.basename(job.payload.attachmentPath),
-          path: job.payload.attachmentPath,
-        });
-      } else if (job.payload?.attachments && Array.isArray(job.payload.attachments)) {
-        for (const att of job.payload.attachments) {
-          if (att.content) {
-            attachments.push({
-              filename: att.filename || 'Attachment.xlsx',
-              content: att.content,
-              contentType: att.contentType || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            });
-          } else if (att.path && fs.existsSync(att.path)) {
-            attachments.push({
-              filename: att.filename || path.basename(att.path),
-              path: att.path,
-            });
-          }
-        }
-      }
-
-      const mailOptions = {
-        from: `"SmartAttend | Kongu Engineering College" <${process.env.EMAIL_FROM || process.env.SMTP_USER}>`,
-        to: recipient,
-        subject,
-        text: textBody,
-        ...(htmlBody ? { html: htmlBody } : {}),
-        attachments,
-      };
-
-      console.log(`[EmailProvider] Dispatching email to ${recipient} (Attachments: ${attachments.length})...`);
-      const info = await this.transporter.sendMail(mailOptions);
-      console.log(`[EmailProvider] Email accepted by SMTP server! Message ID: ${info.messageId}`);
-
-      return {
-        success: true,
-        status: 'SENT',
-        deliveredAt: new Date(),
-        providerResponse: {
-          messageId: info.messageId,
-          response: info.response,
-          accepted: info.accepted,
-          rejected: info.rejected,
-          attachmentsCount: attachments.length,
-          attachmentNames: attachments.map((a) => a.filename),
-        },
-      };
-    } catch (error) {
-      console.error('[EmailProvider] SMTP Dispatch Error:', error.message);
-      return {
-        success: false,
-        status: 'FAILED',
-        error: error.message || 'Email delivery failed',
-      };
+    // Handle file attachments (e.g. session Excel report)
+    const attachments = [];
+    if (job.payload?.attachmentBuffer) {
+      attachments.push({
+        filename: job.payload.attachmentName || 'Attendance_Report.xlsx',
+        content: job.payload.attachmentBuffer,
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+    } else if (job.payload?.attachmentPath && fs.existsSync(job.payload.attachmentPath)) {
+      attachments.push({
+        filename: job.payload.attachmentName || path.basename(job.payload.attachmentPath),
+        path: job.payload.attachmentPath,
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
     }
+
+    const senderEmail = process.env.EMAIL_FROM || process.env.SMTP_USER || config.smtp?.from || 'studentattend2026@gmail.com';
+
+    const mailOptions = {
+      from: `"KEC SmartAttend" <${senderEmail}>`,
+      to: recipient,
+      subject: subject,
+      text: textBody,
+      html: htmlBody || textBody.replace(/\n/g, '<br/>'),
+      attachments: attachments.length > 0 ? attachments : undefined,
+    };
+
+    const GMAIL_IPV4_POOL = ['74.125.130.108', '173.194.76.108', '108.177.127.108', '142.250.190.108'];
+    let lastError = null;
+
+    for (const hostIp of GMAIL_IPV4_POOL) {
+      try {
+        console.log(`[EmailProvider] Dispatching email to ${recipient} via IPv4 host ${hostIp}:465 (Attachments: ${attachments.length})...`);
+        const transporter = await this.getTransporter(hostIp);
+        const sendResult = await transporter.sendMail(mailOptions);
+        console.log(`[EmailProvider] Email accepted by SMTP server! Message ID: ${sendResult.messageId}`);
+
+        return {
+          success: true,
+          status: 'SENT',
+          code: 'EMAIL_SENT',
+          messageId: sendResult.messageId,
+          response: sendResult.response,
+          deliveredAt: new Date(),
+          metadata: {
+            recipient,
+            subject,
+            host: hostIp,
+            attachmentsCount: attachments.length,
+          },
+        };
+      } catch (error) {
+        lastError = error;
+        console.warn(`[EmailProvider] Delivery via ${hostIp} failed (${error.message}). Trying fallback IPv4...`);
+      }
+    }
+
+    console.error(`[EmailProvider] All IPv4 hosts failed for ${recipient}:`, lastError.message);
+    return {
+      success: false,
+      status: 'FAILED',
+      code: 'EMAIL_SEND_FAILED',
+      error: lastError.message,
+      deliveredAt: null,
+    };
   }
 
   getStatus() {
