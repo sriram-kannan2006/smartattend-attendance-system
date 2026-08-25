@@ -14,6 +14,8 @@ const ipv4Lookup = (hostname, options, callback) => {
   dns.lookup(hostname, { family: 4, all: false }, callback);
 };
 
+const axios = require('axios');
+
 class EmailProvider extends BaseProvider {
   constructor() {
     super('EMAIL');
@@ -26,57 +28,10 @@ class EmailProvider extends BaseProvider {
     const smtpHost = process.env.SMTP_HOST || config.smtp?.host || 'smtp.gmail.com';
     const smtpUser = process.env.SMTP_USER || config.smtp?.user || 'studentattend2026@gmail.com';
     const smtpPass = process.env.SMTP_PASSWORD || process.env.SMTP_PASS || config.smtp?.password || 'qdjd aadb dnyr slja';
-    const smtpPort = parseInt(process.env.SMTP_PORT || config.smtp?.port, 10) || 587;
-    const smtpSecure = process.env.SMTP_SECURE === 'true' || config.smtp?.secure === true;
+    const hasHttpsKey = Boolean(process.env.RESEND_API_KEY || process.env.BREVO_API_KEY || process.env.SENDGRID_API_KEY);
 
-    const hasSmtp = Boolean(smtpHost && smtpUser && smtpPass);
+    const hasSmtp = Boolean(smtpHost && smtpUser && smtpPass) || hasHttpsKey;
     this.isConfigured = config.notifications?.emailEnabled !== false && hasSmtp;
-
-    if (this.isConfigured && !this.transporter) {
-      try {
-        const isGmail = smtpHost.includes('gmail.com') || (!smtpHost && smtpUser.includes('@gmail.com'));
-        
-        const transportOptions = isGmail
-          ? {
-              host: 'smtp.gmail.com',
-              port: 465,
-              secure: true, // Direct SSL on port 465 (Allowed through Render firewall)
-              lookup: ipv4Lookup, // CRITICAL: Guarantees IPv4 socket resolution
-              auth: {
-                user: smtpUser,
-                pass: smtpPass,
-              },
-              connectionTimeout: 15000,
-              greetingTimeout: 15000,
-              socketTimeout: 20000,
-              tls: {
-                rejectUnauthorized: false,
-              },
-            }
-          : {
-              host: smtpHost,
-              port: smtpPort || 465,
-              secure: smtpSecure !== false,
-              lookup: ipv4Lookup, // Guarantees IPv4 socket resolution
-              auth: {
-                user: smtpUser,
-                pass: smtpPass,
-              },
-              connectionTimeout: 15000,
-              greetingTimeout: 15000,
-              socketTimeout: 20000,
-              tls: {
-                rejectUnauthorized: false,
-              },
-            };
-
-        this.transporter = nodemailer.createTransport(transportOptions);
-      } catch (err) {
-        console.error('[EmailProvider] Error initializing nodemailer transport:', err.message);
-        this.isConfigured = false;
-        this.transporter = null;
-      }
-    }
   }
 
   async getTransporter(targetHost = '74.125.130.108') {
@@ -109,6 +64,10 @@ class EmailProvider extends BaseProvider {
     this.checkConfiguration();
     if (!this.isConfigured) {
       return { success: false, error: 'Email provider is not configured' };
+    }
+
+    if (process.env.RESEND_API_KEY || process.env.BREVO_API_KEY) {
+      return { success: true, message: 'HTTPS REST Email API configured and ready (Port 443)' };
     }
 
     try {
@@ -178,6 +137,7 @@ class EmailProvider extends BaseProvider {
 
     const mailOptions = {
       from: `"KEC SmartAttend" <${senderEmail}>`,
+      fromEmail: senderEmail,
       to: recipient,
       subject: subject,
       text: textBody,
@@ -185,6 +145,13 @@ class EmailProvider extends BaseProvider {
       attachments: attachments.length > 0 ? attachments : undefined,
     };
 
+    // 1. Try HTTPS REST API over Port 443 if configured (Bypasses all cloud port blocks)
+    const httpsResult = await this.sendViaHttpsRest(job, mailOptions);
+    if (httpsResult && httpsResult.success) {
+      return httpsResult;
+    }
+
+    // 2. Direct SMTP with Google IPv4 pool fallback
     const GMAIL_IPV4_POOL = ['74.125.130.108', '173.194.76.108', '108.177.127.108', '142.250.190.108'];
     let lastError = null;
 
@@ -215,7 +182,7 @@ class EmailProvider extends BaseProvider {
       }
     }
 
-    console.error(`[EmailProvider] All IPv4 hosts failed for ${recipient}:`, lastError.message);
+    console.error(`[EmailProvider] All delivery channels failed for ${recipient}:`, lastError.message);
     return {
       success: false,
       status: 'FAILED',
@@ -223,6 +190,86 @@ class EmailProvider extends BaseProvider {
       error: lastError.message,
       deliveredAt: null,
     };
+  }
+
+  async sendViaHttpsRest(job, mailOptions) {
+    const resendApiKey = process.env.RESEND_API_KEY || config.smtp?.resendApiKey;
+    const brevoApiKey = process.env.BREVO_API_KEY || config.smtp?.brevoApiKey;
+
+    if (resendApiKey) {
+      try {
+        console.log(`[EmailProvider] Dispatching email via Resend HTTPS API (Port 443)...`);
+        const res = await axios.post(
+          'https://api.resend.com/emails',
+          {
+            from: 'KEC SmartAttend <onboarding@resend.dev>',
+            to: [mailOptions.to],
+            subject: mailOptions.subject,
+            html: mailOptions.html,
+            attachments: mailOptions.attachments?.map((att) => ({
+              filename: att.filename,
+              content: att.content ? (Buffer.isBuffer(att.content) ? att.content.toString('base64') : att.content) : undefined,
+              path: att.path,
+            })),
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${resendApiKey}`,
+              'Content-Type': 'application/json',
+            },
+            timeout: 15000,
+          }
+        );
+
+        return {
+          success: true,
+          status: 'SENT',
+          code: 'EMAIL_SENT',
+          messageId: res.data?.id,
+          deliveredAt: new Date(),
+        };
+      } catch (err) {
+        console.warn(`[EmailProvider] Resend HTTPS API warning: ${err.response?.data?.message || err.message}`);
+      }
+    }
+
+    if (brevoApiKey) {
+      try {
+        console.log(`[EmailProvider] Dispatching email via Brevo HTTPS API (Port 443)...`);
+        const res = await axios.post(
+          'https://api.brevo.com/v3/smtp/email',
+          {
+            sender: { name: 'KEC SmartAttend', email: mailOptions.fromEmail || 'studentattend2026@gmail.com' },
+            to: [{ email: mailOptions.to }],
+            subject: mailOptions.subject,
+            htmlContent: mailOptions.html,
+            attachment: mailOptions.attachments?.map((att) => ({
+              name: att.filename,
+              content: att.content ? (Buffer.isBuffer(att.content) ? att.content.toString('base64') : att.content) : undefined,
+            })),
+          },
+          {
+            headers: {
+              'api-key': brevoApiKey,
+              'Content-Type': 'application/json',
+            },
+            timeout: 15000,
+          }
+        );
+
+        return {
+          success: true,
+          status: 'SENT',
+          code: 'EMAIL_SENT',
+          messageId: res.data?.messageId,
+          deliveredAt: new Date(),
+        };
+      } catch (err) {
+        console.warn(`[EmailProvider] Brevo HTTPS API warning: ${err.response?.data?.message || err.message}`);
+      }
+    }
+
+    return null;
   }
 
   getStatus() {
