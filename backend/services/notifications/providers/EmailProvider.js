@@ -79,14 +79,53 @@ class EmailProvider extends BaseProvider {
     }
   }
 
+  async getTransporter() {
+    const smtpHost = process.env.SMTP_HOST || config.smtp?.host || 'smtp.gmail.com';
+    const smtpUser = process.env.SMTP_USER || config.smtp?.user || 'studentattend2026@gmail.com';
+    const smtpPass = process.env.SMTP_PASSWORD || process.env.SMTP_PASS || config.smtp?.password || 'qdjd aadb dnyr slja';
+    const isGmail = smtpHost.includes('gmail.com') || (!smtpHost && smtpUser.includes('@gmail.com'));
+
+    let targetHost = smtpHost;
+    try {
+      targetHost = await new Promise((resolve) => {
+        dns.lookup(smtpHost, { family: 4 }, (err, address) => {
+          if (err || !address) resolve(smtpHost);
+          else resolve(address);
+        });
+      });
+    } catch (e) {
+      targetHost = smtpHost;
+    }
+
+    const transportOptions = {
+      host: targetHost,
+      port: 465,
+      secure: true,
+      auth: {
+        user: smtpUser,
+        pass: smtpPass,
+      },
+      tls: {
+        servername: isGmail ? 'smtp.gmail.com' : smtpHost,
+        rejectUnauthorized: false,
+      },
+      connectionTimeout: 15000,
+      greetingTimeout: 15000,
+      socketTimeout: 20000,
+    };
+
+    return nodemailer.createTransport(transportOptions);
+  }
+
   async verifyConnection() {
     this.checkConfiguration();
-    if (!this.isConfigured || !this.transporter) {
+    if (!this.isConfigured) {
       return { success: false, error: 'Email provider is not configured' };
     }
 
     try {
-      await this.transporter.verify();
+      const transporter = await this.getTransporter();
+      await transporter.verify();
       return { success: true, message: 'SMTP connection verified successfully' };
     } catch (error) {
       return { success: false, error: error.message };
@@ -116,7 +155,7 @@ class EmailProvider extends BaseProvider {
 
     this.checkConfiguration();
 
-    if (!this.isConfigured || !this.transporter) {
+    if (!this.isConfigured) {
       return {
         success: false,
         status: 'FAILED',
@@ -127,6 +166,7 @@ class EmailProvider extends BaseProvider {
     }
 
     try {
+      const transporter = await this.getTransporter();
       const recipient = job.recipientAddress || job.payload?.recipientEmail;
       const subject = job.payload?.subject || job.payload?.title || 'Attendance Session Report — Kongu Engineering College';
       const textBody = job.payload?.body || job.payload?.message || '';
