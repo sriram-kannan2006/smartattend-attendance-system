@@ -39,8 +39,8 @@ class EmailProvider extends BaseProvider {
         const transportOptions = isGmail
           ? {
               host: 'smtp.gmail.com',
-              port: 587,
-              secure: false, // Use STARTTLS
+              port: 465,
+              secure: true, // Direct SSL on port 465 (Allowed through Render firewall)
               lookup: ipv4Lookup, // CRITICAL: Guarantees IPv4 socket resolution
               auth: {
                 user: smtpUser,
@@ -55,8 +55,8 @@ class EmailProvider extends BaseProvider {
             }
           : {
               host: smtpHost,
-              port: smtpPort,
-              secure: smtpSecure,
+              port: smtpPort || 465,
+              secure: smtpSecure !== false,
               lookup: ipv4Lookup, // Guarantees IPv4 socket resolution
               auth: {
                 user: smtpUser,
