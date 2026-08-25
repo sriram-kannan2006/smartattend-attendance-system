@@ -9,6 +9,7 @@ const Subject = require('../models/Subject');
 const Timetable = require('../models/Timetable');
 const ODRecord = require('../models/ODRecord');
 const FaceVerificationEvent = require('../models/FaceVerificationEvent');
+const NotificationJob = require('../models/NotificationJob');
 const AppError = require('../utils/AppError');
 const { logAudit } = require('../utils/auditLogger');
 const qrService = require('./qrService');
@@ -151,13 +152,23 @@ const createSession = async (sessionData, req = null) => {
 const markPresent = async (scanData, req = null) => {
   const { studentUserId, sessionId, qrToken, faceAuthId, location, deviceInfo } = scanData;
 
-  // STEP 1: Validate student identity
+  // STEP 1: Validate attendance session
+  const session = await qrService.findSession(sessionId);
+  if (!session) {
+    throw new AppError('Attendance session not found.', 404);
+  }
+
+  if (session.status !== 'ACTIVE') {
+    throw new AppError('Attendance session is closed.', 400);
+  }
+
+  // STEP 2: Validate student identity
   const student = await Student.findOne({ userId: studentUserId, isActive: true });
   if (!student) {
     throw new AppError('Student not found or inactive.', 404);
   }
 
-  // STEP 2: Validate face authorization
+  // STEP 3: Validate face authorization
   if (!faceAuthId) {
     throw new AppError('Face authentication is required. Please verify your identity first.', 400);
   }
@@ -182,16 +193,6 @@ const markPresent = async (scanData, req = null) => {
 
   if (faceEvent.used) {
     throw new AppError('Face authorization has already been used.', 400);
-  }
-
-  // STEP 3: Validate attendance session
-  const session = await qrService.findSession(sessionId);
-  if (!session) {
-    throw new AppError('Attendance session not found.', 404);
-  }
-
-  if (session.status !== 'ACTIVE') {
-    throw new AppError('Attendance session is not active.', 400);
   }
 
   // STEP 4: Validate QR token
@@ -292,12 +293,13 @@ const markPresent = async (scanData, req = null) => {
  * Finalize attendance: calculate absentees and generate statistics.
  * Called when teacher closes the session.
  *
- * @param {string} sessionMongoId - Session MongoDB _id
+ * @param {string} sessionMongoId - Session MongoDB _id or sessionId string
  * @param {string} teacherUserId - Teacher's user ID for authorization
  * @param {Object} req - Express request
  * @returns {Object} Final attendance statistics
  */
 const finalizeAttendance = async (sessionMongoId, teacherUserId, req = null) => {
+  console.log(`[ATTENDANCE] Finalization started for session: ${sessionMongoId}`);
   const sessionDoc = await qrService.findSession(sessionMongoId);
 
   if (!sessionDoc) {
@@ -309,7 +311,7 @@ const finalizeAttendance = async (sessionMongoId, teacherUserId, req = null) => 
     .populate('subjectId', 'name code')
     .populate('teacherId', 'name email');
 
-  // Verify ownership
+  // Verify ownership or faculty/admin authorization
   const teacher = await Teacher.findOne({ userId: teacherUserId });
   const user = await User.findById(teacherUserId);
 
@@ -321,17 +323,46 @@ const finalizeAttendance = async (sessionMongoId, teacherUserId, req = null) => 
     throw new AppError('Not authorized to close this session.', 403);
   }
 
-  // If session is already closed, still allow re-sending finalized report
   const isAlreadyClosed = session.status === 'CLOSED';
 
-  // Get all students in the class
-  const classStudents = await Student.find({ classId: session.classId, isActive: true });
+  // If already closed and email was already delivered, return existing state idempotently
+  if (isAlreadyClosed) {
+    const existingEmailJob = await NotificationJob.findOne({
+      type: 'HOD_ATTENDANCE_SUMMARY',
+      'payload.sessionId': session._id,
+      status: 'SENT',
+    });
 
-  // Get students who already have attendance records
-  const existingRecords = await Attendance.find({ sessionId: session._id });
-  const markedStudentIds = new Set(existingRecords.map((r) => r.studentId.toString()));
+    if (existingEmailJob) {
+      console.log(`[ATTENDANCE] Session ${session.sessionId} is already finalized and email sent. Idempotent return.`);
+      return {
+        success: true,
+        message: 'Attendance already finalized.',
+        session: {
+          id: session._id,
+          sessionId: session.sessionId,
+          className: session.classId?.name,
+          subjectName: session.subjectId?.name,
+          hour: session.hour,
+          date: session.date,
+          status: 'CLOSED',
+        },
+        stats: {
+          totalStudents: session.totalStudents,
+          present: session.presentCount,
+          absent: session.absentCount,
+          od: session.odCount,
+          percentage: session.totalStudents > 0 ? Math.round((session.presentCount / session.totalStudents) * 100) : 0,
+        },
+      };
+    }
+  }
 
-  // Get approved OD records for this date and hour
+  // 1. Get entire applicable class roster
+  const classStudents = await Student.find({ classId: session.classId, isActive: true }).sort({ registerNumber: 1 });
+  const totalStudents = classStudents.length;
+
+  // 2. Get approved OD records for this date and hour
   const odRecords = await ODRecord.find({
     date: session.date,
     startHour: { $lte: session.hour },
@@ -340,13 +371,18 @@ const finalizeAttendance = async (sessionMongoId, teacherUserId, req = null) => 
   });
   const odStudentIds = new Set(odRecords.map((r) => r.studentId.toString()));
 
-  // Mark absent students (not present and not on OD) if not already marked
-  const absentRecords = [];
+  // 3. Get existing attendance records
+  const existingRecords = await Attendance.find({ sessionId: session._id });
+  const existingRecordsByStudent = new Map();
+  existingRecords.forEach((r) => existingRecordsByStudent.set(r.studentId.toString(), r));
+
+  // 4. Mark all unrecorded students (OD or ABSENT)
   if (!isAlreadyClosed) {
     for (const student of classStudents) {
-      if (!markedStudentIds.has(student._id.toString())) {
-        const isOD = odStudentIds.has(student._id.toString());
-        const record = await Attendance.create({
+      const sId = student._id.toString();
+      if (!existingRecordsByStudent.has(sId)) {
+        const isOD = odStudentIds.has(sId);
+        await Attendance.create({
           studentId: student._id,
           sessionId: session._id,
           classId: session.classId,
@@ -356,37 +392,66 @@ const finalizeAttendance = async (sessionMongoId, teacherUserId, req = null) => 
           hour: session.hour,
           status: isOD ? 'OD' : 'ABSENT',
         });
-        if (!isOD) absentRecords.push(record);
       }
     }
-  } else {
-    const existingAbsents = await Attendance.find({ sessionId: session._id, status: 'ABSENT' });
-    absentRecords.push(...existingAbsents);
   }
 
-  // Calculate final statistics
-  const finalPresent = await Attendance.countDocuments({ sessionId: session._id, status: 'PRESENT' });
-  const finalAbsent = await Attendance.countDocuments({ sessionId: session._id, status: 'ABSENT' });
-  const finalOD = await Attendance.countDocuments({ sessionId: session._id, status: { $in: ['OD'] } });
+  // 5. Query all finalized attendance records with full population
+  const allFinalRecords = await Attendance.find({ sessionId: session._id })
+    .populate('studentId', 'name registerNumber email hostelId')
+    .sort({ 'studentId.registerNumber': 1 });
 
-  // Update session
+  // 6. Group and calculate authoritative counts
+  const presentRecords = allFinalRecords.filter((r) => r.status === 'PRESENT');
+  const odRecordsFinal = allFinalRecords.filter((r) => r.status === 'OD');
+  const absentRecordsFinal = allFinalRecords.filter((r) => r.status === 'ABSENT');
+
+  const presentCount = presentRecords.length;
+  const odCount = odRecordsFinal.length;
+  const absentCount = absentRecordsFinal.length;
+
+  // 7. Master Count Validations
+  if (presentCount < 0 || absentCount < 0 || odCount < 0) {
+    throw new AppError('Invalid negative attendance count computed.', 500);
+  }
+
+  const absentStudentNames = absentRecordsFinal.map((r) =>
+    r.studentId ? `${r.studentId.name} (${r.studentId.registerNumber})` : 'Student'
+  );
+  const odStudentNames = odRecordsFinal.map((r) =>
+    r.studentId ? `${r.studentId.name} (${r.studentId.registerNumber})` : 'Student'
+  );
+
+  if (absentCount !== absentStudentNames.length) {
+    throw new AppError(`Absent count (${absentCount}) does not match absentee list length (${absentStudentNames.length}).`, 500);
+  }
+
+  const percentage = totalStudents > 0 ? Math.round((presentCount / totalStudents) * 100) : 0;
+
+  console.log(`[ATTENDANCE] Authoritative counts -> Total: ${totalStudents}, Present: ${presentCount}, Absent: ${absentCount}, OD: ${odCount}, Pct: ${percentage}%`);
+
+  // 8. Update session and close QR
   session.status = 'CLOSED';
   session.closedAt = session.closedAt || new Date();
-  session.presentCount = finalPresent;
-  session.absentCount = finalAbsent;
-  session.odCount = finalOD;
-  session.totalStudents = classStudents.length;
+  session.currentQrToken = null;
+  session.currentQrExpiresAt = new Date();
+  session.presentCount = presentCount;
+  session.absentCount = absentCount;
+  session.odCount = odCount;
+  session.totalStudents = totalStudents;
   await session.save();
 
-  // Audit log
+  console.log(`[ATTENDANCE] Session ${session.sessionId} status set to CLOSED and QR disabled`);
+
+  // 9. Audit log
   await logAudit(teacherUserId, 'SESSION_CLOSE', 'AttendanceSession', session._id, {
-    present: finalPresent,
-    absent: finalAbsent,
-    od: finalOD,
-    total: classStudents.length,
+    present: presentCount,
+    absent: absentCount,
+    od: odCount,
+    total: totalStudents,
   }, req);
 
-  // Generate Excel report for attachment
+  // 10. Generate Authoritative Excel report
   let reportFilePath = null;
   let reportFilename = null;
   let reportBuffer = null;
@@ -395,33 +460,36 @@ const finalizeAttendance = async (sessionMongoId, teacherUserId, req = null) => 
     reportFilePath = reportResult.report?.filePath || reportResult.filePath;
     reportFilename = reportResult.report?.fileName || reportResult.report?.filename || reportResult.fileName;
     reportBuffer = reportResult.buffer || null;
+    console.log(`[ATTENDANCE] Excel report generated: ${reportFilename} (Buffer size: ${reportBuffer?.length || 0} bytes)`);
   } catch (repErr) {
-    console.warn('[AttendanceService] Excel generation notice for notification:', repErr.message);
+    console.error('[ATTENDANCE] Excel generation error:', repErr.message);
   }
 
-  // Trigger Notification Engine (Awaited so SMTP delivery completes reliably)
+  // 11. Trigger Notification Engine (Awaited so SMTP delivery completes reliably)
   try {
+    console.log(`[NOTIFICATION] Dispatching finalized attendance report for session ${session.sessionId}...`);
     await notificationEngine.triggerAttendanceFinalized({
       sessionId: session._id,
       session,
       teacher,
       allStudents: classStudents,
-      absentStudentIds: absentRecords.map(r => r.studentId),
+      absentStudentIds: absentRecordsFinal.map((r) => r.studentId?._id || r.studentId),
+      absentStudentNames,
+      odStudentNames,
       reportFilePath,
       reportFilename,
       reportBuffer,
       stats: {
-        totalStudents: classStudents.length,
-        present: finalPresent,
-        absent: finalAbsent,
-        od: finalOD,
-        percentage: classStudents.length > 0
-          ? Math.round((finalPresent / classStudents.length) * 100)
-          : 0,
+        totalStudents,
+        present: presentCount,
+        absent: absentCount,
+        od: odCount,
+        percentage,
       },
     });
+    console.log(`[NOTIFICATION] Notification processing completed for session ${session.sessionId}`);
   } catch (notifErr) {
-    console.warn('[NotificationEngine] Trigger call warning:', notifErr.message);
+    console.error('[NOTIFICATION] Notification trigger warning:', notifErr.message);
   }
 
   return {
@@ -432,18 +500,15 @@ const finalizeAttendance = async (sessionMongoId, teacherUserId, req = null) => 
       subjectName: session.subjectId?.name,
       hour: session.hour,
       date: session.date,
-      status: session.status,
+      status: 'CLOSED',
     },
     stats: {
-      totalStudents: classStudents.length,
-      present: finalPresent,
-      absent: finalAbsent,
-      od: finalOD,
-      percentage: classStudents.length > 0
-        ? Math.round((finalPresent / classStudents.length) * 100)
-        : 0,
+      totalStudents,
+      present: presentCount,
+      absent: absentCount,
+      od: odCount,
+      percentage,
     },
-    absentStudents: absentRecords.length,
   };
 };
 

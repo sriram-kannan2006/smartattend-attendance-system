@@ -236,7 +236,17 @@ class NotificationEngine {
    * Dispatches notifications for absent students and generates EXACTLY ONE HOD summary.
    */
   async triggerAttendanceFinalized(data) {
-    const { session, teacher, absentStudentIds = [], reportFilePath, reportFilename, reportBuffer, stats = {} } = data;
+    const {
+      session,
+      teacher,
+      absentStudentIds = [],
+      absentStudentNames: providedAbsentNames = null,
+      odStudentNames: providedODNames = null,
+      reportFilePath,
+      reportFilename,
+      reportBuffer,
+      stats = {},
+    } = data;
     if (!session) return;
 
     const className = session.classId?.name || 'ECE III Year - Section D';
@@ -270,30 +280,54 @@ class NotificationEngine {
     }
 
     const subjectName = session.subjectId?.name || 'Digital Signal Processing';
+    const totalStudents = stats.totalStudents ?? session.totalStudents ?? 0;
     const presentCount = stats.present ?? session.presentCount ?? 0;
+    const absentCount = stats.absent ?? session.absentCount ?? 0;
+    const odCount = stats.od ?? session.odCount ?? 0;
     const departmentId = session.classId?.departmentId || session.subjectId?.departmentId;
 
-    // Collect absent student names and OD student names
-    const absentStudentNames = [];
-    const odStudentNames = [];
+    // Collect absent student names if not provided directly
+    let absentStudentNames = Array.isArray(providedAbsentNames) && providedAbsentNames.length > 0
+      ? providedAbsentNames
+      : [];
 
-    for (const studentId of absentStudentIds) {
+    if (absentStudentNames.length === 0 && absentStudentIds.length > 0) {
+      for (const studentId of absentStudentIds) {
+        try {
+          const studentInfo = await recipientResolver.resolveStudent(studentId);
+          if (studentInfo) {
+            absentStudentNames.push(`${studentInfo.name} (${studentInfo.registerNumber})`);
+          }
+        } catch (err) {}
+      }
+    }
+
+    // Collect OD student names if not provided directly
+    let odStudentNames = Array.isArray(providedODNames) && providedODNames.length > 0
+      ? providedODNames
+      : [];
+
+    if (odStudentNames.length === 0) {
       try {
-        const studentInfo = await recipientResolver.resolveStudent(studentId);
-        if (studentInfo) {
-          absentStudentNames.push(`${studentInfo.name} (${studentInfo.registerNumber})`);
+        const odAttendanceDocs = await Attendance.find({ sessionId: session._id, status: 'OD' }).populate('studentId', 'name registerNumber');
+        for (const doc of odAttendanceDocs) {
+          if (doc.studentId?.name) {
+            odStudentNames.push(`${doc.studentId.name} (${doc.studentId.registerNumber})`);
+          }
         }
       } catch (err) {}
     }
 
-    try {
-      const odAttendanceDocs = await Attendance.find({ sessionId: session._id, status: 'OD' }).populate('studentId', 'name registerNumber');
-      for (const doc of odAttendanceDocs) {
-        if (doc.studentId?.name) {
-          odStudentNames.push(`${doc.studentId.name} (${doc.studentId.registerNumber})`);
-        }
-      }
-    } catch (err) {}
+    // MASTER VALIDATIONS
+    if (presentCount < 0 || absentCount < 0 || odCount < 0 || totalStudents < 0) {
+      console.error(`[NOTIFICATION_VALIDATION_ERROR] Negative counts detected: Total=${totalStudents}, Present=${presentCount}, Absent=${absentCount}, OD=${odCount}`);
+      throw new Error('Attendance count validation failed: Negative count detected.');
+    }
+
+    if (absentCount !== absentStudentNames.length) {
+      console.error(`[NOTIFICATION_VALIDATION_ERROR] Absent count mismatch: absentCount=${absentCount}, absentStudentNames.length=${absentStudentNames.length}`);
+      throw new Error(`Attendance count validation failed: Absent count (${absentCount}) does not match absentee list length (${absentStudentNames.length}).`);
+    }
 
     // Required Plaintext & HTML Email Content (Exact User Spec)
     const emailText = `Class: ${className}
@@ -301,7 +335,10 @@ Year: ${year}
 Hour: ${hour}
 Class Taken By: ${classTakenBy}
 Period / Subject: ${subjectName}
+Total students: ${totalStudents}
 Present count: ${presentCount}
+Absent count: ${absentCount}
+On Duty count: ${odCount}
 
 Absent student names:
 ${absentStudentNames.length > 0 ? absentStudentNames.map((n, i) => `${i + 1}. ${n}`).join('\n') : 'None'}
@@ -320,18 +357,21 @@ ${odStudentNames.length > 0 ? odStudentNames.map((n, i) => `${i + 1}. ${n}`).joi
           <tr><td style="padding: 6px 0; font-weight: bold; color: #475569;">Hour:</td><td style="color: #0f172a; font-weight: 600;">Hour ${hour}</td></tr>
           <tr><td style="padding: 6px 0; font-weight: bold; color: #475569;">Class Taken By:</td><td style="color: #0f172a; font-weight: 600;">${classTakenBy}</td></tr>
           <tr><td style="padding: 6px 0; font-weight: bold; color: #475569;">Period / Subject:</td><td style="color: #0f172a; font-weight: 600;">${subjectName}</td></tr>
-          <tr><td style="padding: 6px 0; font-weight: bold; color: #475569;">Present count:</td><td style="color: #16a34a; font-weight: bold;">${presentCount}</td></tr>
+          <tr><td style="padding: 6px 0; font-weight: bold; color: #475569;">Total Students:</td><td style="color: #0f172a; font-weight: bold;">${totalStudents}</td></tr>
+          <tr><td style="padding: 6px 0; font-weight: bold; color: #475569;">Present Count:</td><td style="color: #16a34a; font-weight: bold;">${presentCount}</td></tr>
+          <tr><td style="padding: 6px 0; font-weight: bold; color: #475569;">Absent Count:</td><td style="color: #dc2626; font-weight: bold;">${absentCount}</td></tr>
+          <tr><td style="padding: 6px 0; font-weight: bold; color: #475569;">On Duty (OD) Count:</td><td style="color: #2563eb; font-weight: bold;">${odCount}</td></tr>
         </table>
 
         <div style="margin-top: 20px;">
-          <h4 style="margin: 0 0 6px 0; color: #dc2626; font-size: 13px;">Absent student names (${absentStudentNames.length}):</h4>
+          <h4 style="margin: 0 0 6px 0; color: #dc2626; font-size: 13px;">Absent Students (${absentCount}):</h4>
           <div style="padding: 10px; background-color: #fef2f2; border: 1px solid #fee2e2; border-radius: 8px; font-size: 12px; color: #991b1b; line-height: 1.6;">
             ${absentStudentNames.length > 0 ? absentStudentNames.map((n, i) => `${i + 1}. ${n}`).join('<br/>') : '<em>None</em>'}
           </div>
         </div>
 
         <div style="margin-top: 16px;">
-          <h4 style="margin: 0 0 6px 0; color: #2563eb; font-size: 13px;">On Duty student names (${odStudentNames.length}):</h4>
+          <h4 style="margin: 0 0 6px 0; color: #2563eb; font-size: 13px;">On Duty Students (${odCount}):</h4>
           <div style="padding: 10px; background-color: #eff6ff; border: 1px solid #dbeafe; border-radius: 8px; font-size: 12px; color: #1e40af; line-height: 1.6;">
             ${odStudentNames.length > 0 ? odStudentNames.map((n, i) => `${i + 1}. ${n}`).join('<br/>') : '<em>None</em>'}
           </div>
@@ -354,7 +394,21 @@ ${odStudentNames.length > 0 ? odStudentNames.map((n, i) => `${i + 1}. ${n}`).joi
       try {
         const emailProvider = this.getProvider('EMAIL') || new EmailProvider();
         for (const targetEmail of recipientEmails) {
-          console.log(`[NotificationEngine] Dispatching Attendance Report Email to: ${targetEmail}`);
+          // Idempotency check: Don't send duplicate email if already SENT for this session and recipient
+          const existingJob = await NotificationJob.findOne({
+            type: 'HOD_ATTENDANCE_SUMMARY',
+            channel: 'EMAIL',
+            recipientAddress: targetEmail,
+            'payload.sessionId': session._id,
+            status: 'SENT',
+          });
+
+          if (existingJob) {
+            console.log(`[EMAIL] Duplicate protection: Email already sent to ${targetEmail} for session ${session.sessionId}`);
+            continue;
+          }
+
+          console.log(`[EMAIL] Dispatching Attendance Report Email to: ${targetEmail}`);
           const sendResult = await emailProvider.send({
             recipientAddress: targetEmail,
             payload: {
@@ -371,12 +425,15 @@ ${odStudentNames.length > 0 ? odStudentNames.map((n, i) => `${i + 1}. ${n}`).joi
               classTakenBy,
               subjectName,
               presentCount,
+              absentCount,
+              odCount,
+              totalStudents,
               absentStudentNames,
               odStudentNames,
             },
           });
 
-          console.log(`[NotificationEngine] Attendance Report Email to ${targetEmail} Status: ${sendResult?.status} (Success: ${sendResult?.success})`);
+          console.log(`[EMAIL] Provider response for ${targetEmail}: ${sendResult?.success ? 'SUCCESS' : 'FAILED'} (Status: ${sendResult?.status})`);
 
           // Record Job in Database for reporting/audit
           await NotificationJob.create({
@@ -387,11 +444,16 @@ ${odStudentNames.length > 0 ? odStudentNames.map((n, i) => `${i + 1}. ${n}`).joi
             recipientAddress: targetEmail,
             templateId: 'hod_attendance_summary_email',
             payload: {
+              sessionId: session._id,
+              sessionIdString: session.sessionId,
               subject: `Attendance Report: ${className} - Hour ${hour} (${subjectName})`,
               className,
               hour,
               subjectName,
               presentCount,
+              absentCount,
+              odCount,
+              totalStudents,
             },
             status: sendResult?.success ? 'SENT' : 'FAILED',
             deliveredAt: sendResult?.success ? new Date() : null,
@@ -400,7 +462,7 @@ ${odStudentNames.length > 0 ? odStudentNames.map((n, i) => `${i + 1}. ${n}`).joi
           }).catch(() => {});
         }
       } catch (emailErr) {
-        console.error('[NotificationEngine] Attendance report email error:', emailErr.message);
+        console.error('[EMAIL] Provider response: FAILED with error:', emailErr.message);
         notificationLogger.error({ type: 'EMAIL_REPORT', recipient: reportEmail }, emailErr);
       }
     }
@@ -437,83 +499,88 @@ ${odStudentNames.length > 0 ? odStudentNames.map((n, i) => `${i + 1}. ${n}`).joi
       notificationLogger.error({ type: 'HOD_ATTENDANCE_SUMMARY' }, hodErr);
     }
 
-    // 2. Process Absence Alerts per student (Student, Parent, Warden)
-    for (const studentId of absentStudentIds) {
-      try {
-        const studentInfo = await recipientResolver.resolveStudent(studentId);
-        if (!studentInfo) continue;
+    // 3. Process Absence Alerts per student (Student, Parent, Warden) concurrently
+    if (Array.isArray(absentStudentIds) && absentStudentIds.length > 0) {
+      await Promise.allSettled(
+        absentStudentIds.map(async (studentId) => {
+          try {
+            const studentInfo = await recipientResolver.resolveStudent(studentId);
+            if (!studentInfo) return;
 
-        const parentInfo = await recipientResolver.resolveParentForStudent(studentId);
+            const parentInfo = await recipientResolver.resolveParentForStudent(studentId);
 
-        const absencePayload = {
-          studentId: studentInfo.studentId,
-          studentName: studentInfo.name,
-          registerNumber: studentInfo.registerNumber,
-          subjectName,
-          hour,
-          date: session.date || new Date(),
-          className: studentInfo.className,
-          department: studentInfo.departmentName,
-          parentName: parentInfo?.name,
-          parentPhone: parentInfo?.phone,
-          whatsappNumber: parentInfo?.whatsappNumber,
-        };
+            const absencePayload = {
+              studentId: studentInfo.studentId,
+              studentName: studentInfo.name,
+              registerNumber: studentInfo.registerNumber,
+              subjectName,
+              hour,
+              date: session.date || new Date(),
+              className: studentInfo.className,
+              department: studentInfo.departmentName,
+              parentName: parentInfo?.name,
+              parentPhone: parentInfo?.phone,
+              whatsappNumber: parentInfo?.whatsappNumber,
+            };
 
-        // Notify Student (Respect rules)
-        if (studentInfo.user?._id) {
-          const studentChannels = await this.getEnabledChannels('ABSENCE_ALERT', 'STUDENT');
-          if (studentChannels.length > 0) {
-            await this.trigger({
-              type: 'ABSENCE_ALERT',
-              channels: studentChannels,
-              recipientId: studentInfo.user._id,
-              recipientRole: 'STUDENT',
-              recipientAddress: studentInfo.email,
-              payload: absencePayload,
-            });
-          }
-        }
-
-        // Notify Parent (Respect rules and parent WhatsApp opt-in)
-        if (parentInfo) {
-          let parentChannels = await this.getEnabledChannels('ABSENCE_ALERT', 'PARENT');
-          
-          if (!parentInfo.optIn) {
-            parentChannels = parentChannels.filter((c) => c !== 'WHATSAPP');
-          }
-
-          if (parentChannels.length > 0) {
-            await this.trigger({
-              type: 'ABSENCE_ALERT',
-              channels: parentChannels,
-              recipientId: parentInfo.parentId,
-              recipientRole: 'PARENT',
-              recipientAddress: parentInfo.whatsappNumber || parentInfo.phone,
-              payload: absencePayload,
-            });
-          }
-        }
-
-        // Notify Hostel Wardens if student is hosteller
-        if (studentInfo.hostelId) {
-          const wardenChannels = await this.getEnabledChannels('ABSENCE_ALERT', 'WARDEN');
-          if (wardenChannels.length > 0) {
-            const wardens = await recipientResolver.resolveWardensForStudent(studentId);
-            for (const warden of wardens) {
-              await this.trigger({
-                type: 'ABSENCE_ALERT',
-                channels: wardenChannels,
-                recipientId: warden.userId,
-                recipientRole: 'WARDEN',
-                recipientAddress: warden.email || warden.phone,
-                payload: { ...absencePayload, hostel: 'KEC Hostel' },
-              });
+            // Notify Student (Respect rules)
+            if (studentInfo.user?._id) {
+              const studentChannels = await this.getEnabledChannels('ABSENCE_ALERT', 'STUDENT');
+              if (studentChannels.length > 0) {
+                await this.trigger({
+                  type: 'ABSENCE_ALERT',
+                  channels: studentChannels,
+                  recipientId: studentInfo.user._id,
+                  recipientRole: 'STUDENT',
+                  recipientAddress: studentInfo.email,
+                  payload: absencePayload,
+                });
+              }
             }
-          }
-        }
-      } catch (studentErr) {
-        notificationLogger.error({ type: 'ABSENCE_ALERT', studentId }, studentErr);
-      }
+
+            // Notify Parent (Respect rules and parent WhatsApp opt-in)
+            if (parentInfo) {
+              let parentChannels = await this.getEnabledChannels('ABSENCE_ALERT', 'PARENT');
+
+              if (!parentInfo.optIn) {
+                parentChannels = parentChannels.filter((c) => c !== 'WHATSAPP');
+              }
+
+              if (parentChannels.length > 0) {
+                await this.trigger({
+                  type: 'ABSENCE_ALERT',
+                  channels: parentChannels,
+                  recipientId: parentInfo.parentId,
+                  recipientRole: 'PARENT',
+                  recipientAddress: parentInfo.whatsappNumber || parentInfo.phone,
+                  payload: absencePayload,
+                });
+              }
+            }
+
+            // Notify Hostel Wardens if student is hosteller
+            if (studentInfo.hostelId) {
+              const wardens = await recipientResolver.resolveWardensForHostel(studentInfo.hostelId);
+              for (const warden of wardens) {
+                const wardenChannels = await this.getEnabledChannels('ABSENCE_ALERT', 'WARDEN');
+                if (wardenChannels.length > 0) {
+                  await this.trigger({
+                    type: 'ABSENCE_ALERT',
+                    channels: wardenChannels,
+                    recipientId: warden.userId,
+                    recipientRole: 'WARDEN',
+                    recipientAddress: warden.phone,
+                    payload: {
+                      ...absencePayload,
+                      hostelName: studentInfo.hostelName,
+                    },
+                  });
+                }
+              }
+            }
+          } catch (studentErr) {}
+        })
+      );
     }
   }
 
