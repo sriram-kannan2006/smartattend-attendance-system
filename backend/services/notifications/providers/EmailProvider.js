@@ -24,18 +24,39 @@ class EmailProvider extends BaseProvider {
 
     if (this.isConfigured && !this.transporter) {
       try {
-        this.transporter = nodemailer.createTransport({
-          host: smtpHost,
-          port: smtpPort,
-          secure: smtpSecure,
-          auth: {
-            user: smtpUser,
-            pass: smtpPass,
-          },
-          tls: {
-            rejectUnauthorized: false,
-          },
-        });
+        const isGmail = smtpHost.includes('gmail.com') || (!smtpHost && smtpUser.includes('@gmail.com'));
+        
+        const transportOptions = isGmail
+          ? {
+              service: 'gmail',
+              auth: {
+                user: smtpUser,
+                pass: smtpPass,
+              },
+              connectionTimeout: 10000,
+              greetingTimeout: 10000,
+              socketTimeout: 15000,
+              tls: {
+                rejectUnauthorized: false,
+              },
+            }
+          : {
+              host: smtpHost,
+              port: smtpPort,
+              secure: smtpSecure,
+              auth: {
+                user: smtpUser,
+                pass: smtpPass,
+              },
+              connectionTimeout: 10000,
+              greetingTimeout: 10000,
+              socketTimeout: 15000,
+              tls: {
+                rejectUnauthorized: false,
+              },
+            };
+
+        this.transporter = nodemailer.createTransport(transportOptions);
       } catch (err) {
         console.error('[EmailProvider] Error initializing nodemailer transport:', err.message);
         this.isConfigured = false;

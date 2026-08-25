@@ -472,32 +472,34 @@ const finalizeAttendance = async (sessionMongoId, teacherUserId, req = null) => 
     console.error('[ATTENDANCE] Excel generation error:', repErr.message);
   }
 
-  // 11. Trigger Notification Engine (Awaited so SMTP delivery completes reliably)
-  try {
-    console.log(`[NOTIFICATION] Dispatching finalized attendance report for session ${session.sessionId}...`);
-    await notificationEngine.triggerAttendanceFinalized({
-      sessionId: session._id,
-      session,
-      teacher,
-      allStudents: classStudents,
-      absentStudentIds: absentRecordsFinal.map((r) => r.studentId?._id || r.studentId),
-      absentStudentNames,
-      odStudentNames,
-      reportFilePath,
-      reportFilename,
-      reportBuffer,
-      stats: {
-        totalStudents,
-        present: presentCount,
-        absent: absentCount,
-        od: odCount,
-        percentage,
-      },
-    });
-    console.log(`[NOTIFICATION] Notification processing completed for session ${session.sessionId}`);
-  } catch (notifErr) {
-    console.error('[NOTIFICATION] Notification trigger warning:', notifErr.message);
-  }
+  // 11. Trigger Notification Engine in Background Queue (Instant HTTP response)
+  setImmediate(async () => {
+    try {
+      console.log(`[NOTIFICATION] Dispatching finalized attendance report for session ${session.sessionId}...`);
+      await notificationEngine.triggerAttendanceFinalized({
+        sessionId: session._id,
+        session,
+        teacher,
+        allStudents: classStudents,
+        absentStudentIds: absentRecordsFinal.map((r) => r.studentId?._id || r.studentId),
+        absentStudentNames,
+        odStudentNames,
+        reportFilePath,
+        reportFilename,
+        reportBuffer,
+        stats: {
+          totalStudents,
+          present: presentCount,
+          absent: absentCount,
+          od: odCount,
+          percentage,
+        },
+      });
+      console.log(`[NOTIFICATION] Notification processing completed for session ${session.sessionId}`);
+    } catch (notifErr) {
+      console.error('[NOTIFICATION] Notification trigger warning:', notifErr.message);
+    }
+  });
 
   return {
     session: {
