@@ -1,8 +1,18 @@
 const nodemailer = require('nodemailer');
 const fs = require('fs');
 const path = require('path');
+const dns = require('dns');
 const BaseProvider = require('./BaseProvider');
 const config = require('../../../config');
+
+// Explicit IPv4 DNS lookup to guarantee zero IPv6 socket attempts on cloud platforms
+const ipv4Lookup = (hostname, options, callback) => {
+  if (typeof options === 'function') {
+    callback = options;
+    options = {};
+  }
+  dns.lookup(hostname, { family: 4, all: false }, callback);
+};
 
 class EmailProvider extends BaseProvider {
   constructor() {
@@ -30,8 +40,8 @@ class EmailProvider extends BaseProvider {
           ? {
               host: 'smtp.gmail.com',
               port: 587,
-              secure: false, // Use STARTTLS with IPv4
-              family: 4, // CRITICAL: Force IPv4 to prevent ENETUNREACH on cloud containers like Render
+              secure: false, // Use STARTTLS
+              lookup: ipv4Lookup, // CRITICAL: Guarantees IPv4 socket resolution
               auth: {
                 user: smtpUser,
                 pass: smtpPass,
@@ -47,7 +57,7 @@ class EmailProvider extends BaseProvider {
               host: smtpHost,
               port: smtpPort,
               secure: smtpSecure,
-              family: 4, // Force IPv4
+              lookup: ipv4Lookup, // Guarantees IPv4 socket resolution
               auth: {
                 user: smtpUser,
                 pass: smtpPass,
