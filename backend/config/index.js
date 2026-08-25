@@ -1,8 +1,11 @@
 require('dotenv').config();
 const dns = require('dns');
 
-// Configure resilient DNS resolution for MongoDB Atlas SRV connection strings
+// Configure resilient DNS resolution for MongoDB Atlas SRV connection strings and force IPv4 for SMTP
 try {
+  if (dns.setDefaultResultOrder) {
+    dns.setDefaultResultOrder('ipv4first');
+  }
   dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
 } catch (e) {
   // fallback

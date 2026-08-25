@@ -28,14 +28,17 @@ class EmailProvider extends BaseProvider {
         
         const transportOptions = isGmail
           ? {
-              service: 'gmail',
+              host: 'smtp.gmail.com',
+              port: 587,
+              secure: false, // Use STARTTLS with IPv4
+              family: 4, // CRITICAL: Force IPv4 to prevent ENETUNREACH on cloud containers like Render
               auth: {
                 user: smtpUser,
                 pass: smtpPass,
               },
-              connectionTimeout: 10000,
-              greetingTimeout: 10000,
-              socketTimeout: 15000,
+              connectionTimeout: 15000,
+              greetingTimeout: 15000,
+              socketTimeout: 20000,
               tls: {
                 rejectUnauthorized: false,
               },
@@ -44,13 +47,14 @@ class EmailProvider extends BaseProvider {
               host: smtpHost,
               port: smtpPort,
               secure: smtpSecure,
+              family: 4, // Force IPv4
               auth: {
                 user: smtpUser,
                 pass: smtpPass,
               },
-              connectionTimeout: 10000,
-              greetingTimeout: 10000,
-              socketTimeout: 15000,
+              connectionTimeout: 15000,
+              greetingTimeout: 15000,
+              socketTimeout: 20000,
               tls: {
                 rejectUnauthorized: false,
               },
