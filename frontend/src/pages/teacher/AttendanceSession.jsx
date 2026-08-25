@@ -222,11 +222,13 @@ export default function AttendanceSession() {
   const handleCloseSession = async () => {
     try {
       setIsClosing(true);
+      setShowCloseModal(false);
+      setIsClosed(true);
+      showSuccess('Finalizing attendance session & emailing Excel report...');
+
       const res = await attendanceService.closeSession(sessionId);
       const data = res?.data?.data || res?.data || res;
       setCloseResult(data);
-      setIsClosed(true);
-      setShowCloseModal(false);
       showSuccess('Attendance session finalized & official Excel report emailed successfully!');
     } catch (err) {
       console.error('Failed to close session:', err);

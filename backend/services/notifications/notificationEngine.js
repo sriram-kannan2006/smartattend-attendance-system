@@ -383,7 +383,7 @@ ${odStudentNames.length > 0 ? odStudentNames.map((n, i) => `${i + 1}. ${n}`).joi
       </div>
     `;
 
-    // 1. Dispatch Attendance Report Email to designated recipient(s)
+    // 1. Dispatch Attendance Report Email concurrently
     const reportEmail = process.env.ATTENDANCE_REPORT_EMAIL || config.smtp?.attendanceReportEmail || 'kannansriram0910@gmail.com';
     const recipientEmails = new Set();
     if (reportEmail) recipientEmails.add(reportEmail);
@@ -393,195 +393,201 @@ ${odStudentNames.length > 0 ? odStudentNames.map((n, i) => `${i + 1}. ${n}`).joi
     if (config.notifications?.emailEnabled !== false && recipientEmails.size > 0) {
       try {
         const emailProvider = this.getProvider('EMAIL') || new EmailProvider();
-        for (const targetEmail of recipientEmails) {
-          // Idempotency check: Don't send duplicate email if already SENT for this session and recipient
-          const existingJob = await NotificationJob.findOne({
-            type: 'HOD_ATTENDANCE_SUMMARY',
-            channel: 'EMAIL',
-            recipientAddress: targetEmail,
-            'payload.sessionId': session._id,
-            status: 'SENT',
-          });
+        await Promise.all(
+          Array.from(recipientEmails).map(async (targetEmail) => {
+            try {
+              // Idempotency check: Don't send duplicate email if already SENT for this session and recipient
+              const existingJob = await NotificationJob.findOne({
+                type: 'HOD_ATTENDANCE_SUMMARY',
+                channel: 'EMAIL',
+                recipientAddress: targetEmail,
+                'payload.sessionId': session._id,
+                status: 'SENT',
+              });
 
-          if (existingJob) {
-            console.log(`[EMAIL] Duplicate protection: Email already sent to ${targetEmail} for session ${session.sessionId}`);
-            continue;
-          }
+              if (existingJob) {
+                console.log(`[EMAIL] Duplicate protection: Email already sent to ${targetEmail} for session ${session.sessionId}`);
+                return;
+              }
 
-          console.log(`[EMAIL] Dispatching Attendance Report Email to: ${targetEmail}`);
-          const sendResult = await emailProvider.send({
-            recipientAddress: targetEmail,
-            payload: {
-              subject: `Attendance Report: ${className} - Hour ${hour} (${subjectName})`,
-              title: `Attendance Report: ${className}`,
-              body: emailText,
-              html: emailHtml,
-              attachmentBuffer: reportBuffer || null,
-              attachmentPath: reportFilePath || null,
-              attachmentName: reportFilename || `${className.replace(/[^a-zA-Z0-9]/g, '_')}_Hour_${hour}_Report.xlsx`,
-              className,
-              year,
-              hour,
-              classTakenBy,
-              subjectName,
-              presentCount,
-              absentCount,
-              odCount,
-              totalStudents,
-              absentStudentNames,
-              odStudentNames,
-            },
-          });
+              console.log(`[EMAIL] Dispatching Attendance Report Email to: ${targetEmail}`);
+              const sendResult = await emailProvider.send({
+                recipientAddress: targetEmail,
+                payload: {
+                  subject: `Attendance Report: ${className} - Hour ${hour} (${subjectName})`,
+                  title: `Attendance Report: ${className}`,
+                  body: emailText,
+                  html: emailHtml,
+                  attachmentBuffer: reportBuffer || null,
+                  attachmentPath: reportFilePath || null,
+                  attachmentName: reportFilename || `${className.replace(/[^a-zA-Z0-9]/g, '_')}_Hour_${hour}_Report.xlsx`,
+                  className,
+                  year,
+                  hour,
+                  classTakenBy,
+                  subjectName,
+                  presentCount,
+                  absentCount,
+                  odCount,
+                  totalStudents,
+                  absentStudentNames,
+                  odStudentNames,
+                },
+              });
 
-          console.log(`[EMAIL] Provider response for ${targetEmail}: ${sendResult?.success ? 'SUCCESS' : 'FAILED'} (Status: ${sendResult?.status})`);
+              console.log(`[EMAIL] Provider response for ${targetEmail}: ${sendResult?.success ? 'SUCCESS' : 'FAILED'} (Status: ${sendResult?.status})`);
 
-          // Record Job in Database for reporting/audit
-          await NotificationJob.create({
-            jobId: `NJOB-${uuidv4().slice(0, 8).toUpperCase()}`,
-            type: 'HOD_ATTENDANCE_SUMMARY',
-            channel: 'EMAIL',
-            recipientRole: targetEmail === reportEmail ? 'ADMIN' : 'TEACHER',
-            recipientAddress: targetEmail,
-            templateId: 'hod_attendance_summary_email',
-            payload: {
-              sessionId: session._id,
-              sessionIdString: session.sessionId,
-              subject: `Attendance Report: ${className} - Hour ${hour} (${subjectName})`,
-              className,
-              hour,
-              subjectName,
-              presentCount,
-              absentCount,
-              odCount,
-              totalStudents,
-            },
-            status: sendResult?.success ? 'SENT' : 'FAILED',
-            deliveredAt: sendResult?.success ? new Date() : null,
-            error: sendResult?.error || null,
-            providerResponse: sendResult?.providerResponse || null,
-          }).catch(() => {});
-        }
+              // Record Job in Database for reporting/audit
+              await NotificationJob.create({
+                jobId: `NJOB-${uuidv4().slice(0, 8).toUpperCase()}`,
+                type: 'HOD_ATTENDANCE_SUMMARY',
+                channel: 'EMAIL',
+                recipientRole: targetEmail === reportEmail ? 'ADMIN' : 'TEACHER',
+                recipientAddress: targetEmail,
+                templateId: 'hod_attendance_summary_email',
+                payload: {
+                  sessionId: session._id,
+                  sessionIdString: session.sessionId,
+                  subject: `Attendance Report: ${className} - Hour ${hour} (${subjectName})`,
+                  className,
+                  hour,
+                  subjectName,
+                  presentCount,
+                  absentCount,
+                  odCount,
+                  totalStudents,
+                },
+                status: sendResult?.success ? 'SENT' : 'FAILED',
+                deliveredAt: sendResult?.success ? new Date() : null,
+                error: sendResult?.error || null,
+                providerResponse: sendResult?.providerResponse || null,
+              }).catch(() => {});
+            } catch (singleEmailErr) {
+              console.error(`[EMAIL] Failed sending to ${targetEmail}:`, singleEmailErr.message);
+            }
+          })
+        );
       } catch (emailErr) {
         console.error('[EMAIL] Provider response: FAILED with error:', emailErr.message);
         notificationLogger.error({ type: 'EMAIL_REPORT', recipient: reportEmail }, emailErr);
       }
     }
 
-    // 2. Process EXACTLY ONE HOD Attendance Summary Notification (In-App / WhatsApp)
-    try {
-      const hodInfo = await recipientResolver.resolveHODForDepartment(departmentId);
-      if (hodInfo) {
-        const hodChannels = (await this.getEnabledChannels('HOD_ATTENDANCE_SUMMARY', 'HOD')).filter(c => c !== 'EMAIL');
-        if (hodChannels.length > 0) {
-          const hodPayload = {
-            className,
-            subjectName,
-            teacherName: classTakenBy,
-            hour,
-            date: session.date || new Date(),
-            totalStudents: stats.totalStudents || session.totalStudents || 61,
-            presentCount: stats.present ?? session.presentCount ?? 0,
-            absentCount: stats.absent ?? session.absentCount ?? 0,
-            odCount: stats.od ?? session.odCount ?? 0,
-          };
-
-          await this.trigger({
-            type: 'HOD_ATTENDANCE_SUMMARY',
-            channels: hodChannels,
-            recipientId: hodInfo.userId,
-            recipientRole: 'HOD',
-            recipientAddress: hodInfo.phone,
-            payload: hodPayload,
-          });
-        }
-      }
-    } catch (hodErr) {
-      notificationLogger.error({ type: 'HOD_ATTENDANCE_SUMMARY' }, hodErr);
-    }
-
-    // 3. Process Absence Alerts per student (Student, Parent, Warden) concurrently
-    if (Array.isArray(absentStudentIds) && absentStudentIds.length > 0) {
-      await Promise.allSettled(
-        absentStudentIds.map(async (studentId) => {
-          try {
-            const studentInfo = await recipientResolver.resolveStudent(studentId);
-            if (!studentInfo) return;
-
-            const parentInfo = await recipientResolver.resolveParentForStudent(studentId);
-
-            const absencePayload = {
-              studentId: studentInfo.studentId,
-              studentName: studentInfo.name,
-              registerNumber: studentInfo.registerNumber,
+    // 2. Process Background HOD & Student Absence Alerts asynchronously (Non-blocking)
+    setImmediate(async () => {
+      try {
+        const hodInfo = await recipientResolver.resolveHODForDepartment(departmentId);
+        if (hodInfo) {
+          const hodChannels = (await this.getEnabledChannels('HOD_ATTENDANCE_SUMMARY', 'HOD')).filter((c) => c !== 'EMAIL');
+          if (hodChannels.length > 0) {
+            const hodPayload = {
+              className,
               subjectName,
+              teacherName: classTakenBy,
               hour,
               date: session.date || new Date(),
-              className: studentInfo.className,
-              department: studentInfo.departmentName,
-              parentName: parentInfo?.name,
-              parentPhone: parentInfo?.phone,
-              whatsappNumber: parentInfo?.whatsappNumber,
+              totalStudents: stats.totalStudents || session.totalStudents || 61,
+              presentCount: stats.present ?? session.presentCount ?? 0,
+              absentCount: stats.absent ?? session.absentCount ?? 0,
+              odCount: stats.od ?? session.odCount ?? 0,
             };
 
-            // Notify Student (Respect rules)
-            if (studentInfo.user?._id) {
-              const studentChannels = await this.getEnabledChannels('ABSENCE_ALERT', 'STUDENT');
-              if (studentChannels.length > 0) {
-                await this.trigger({
-                  type: 'ABSENCE_ALERT',
-                  channels: studentChannels,
-                  recipientId: studentInfo.user._id,
-                  recipientRole: 'STUDENT',
-                  recipientAddress: studentInfo.email,
-                  payload: absencePayload,
-                });
-              }
-            }
+            await this.trigger({
+              type: 'HOD_ATTENDANCE_SUMMARY',
+              channels: hodChannels,
+              recipientId: hodInfo.userId,
+              recipientRole: 'HOD',
+              recipientAddress: hodInfo.phone,
+              payload: hodPayload,
+            }).catch(() => {});
+          }
+        }
+      } catch (hodErr) {}
 
-            // Notify Parent (Respect rules and parent WhatsApp opt-in)
-            if (parentInfo) {
-              let parentChannels = await this.getEnabledChannels('ABSENCE_ALERT', 'PARENT');
+      // Process Absence Alerts per student (Student, Parent, Warden)
+      if (Array.isArray(absentStudentIds) && absentStudentIds.length > 0) {
+        await Promise.allSettled(
+          absentStudentIds.map(async (studentId) => {
+            try {
+              const studentInfo = await recipientResolver.resolveStudent(studentId);
+              if (!studentInfo) return;
 
-              if (!parentInfo.optIn) {
-                parentChannels = parentChannels.filter((c) => c !== 'WHATSAPP');
-              }
+              const parentInfo = await recipientResolver.resolveParentForStudent(studentId);
 
-              if (parentChannels.length > 0) {
-                await this.trigger({
-                  type: 'ABSENCE_ALERT',
-                  channels: parentChannels,
-                  recipientId: parentInfo.parentId,
-                  recipientRole: 'PARENT',
-                  recipientAddress: parentInfo.whatsappNumber || parentInfo.phone,
-                  payload: absencePayload,
-                });
-              }
-            }
+              const absencePayload = {
+                studentId: studentInfo.studentId,
+                studentName: studentInfo.name,
+                registerNumber: studentInfo.registerNumber,
+                subjectName,
+                hour,
+                date: session.date || new Date(),
+                className: studentInfo.className,
+                department: studentInfo.departmentName,
+                parentName: parentInfo?.name,
+                parentPhone: parentInfo?.phone,
+                whatsappNumber: parentInfo?.whatsappNumber,
+              };
 
-            // Notify Hostel Wardens if student is hosteller
-            if (studentInfo.hostelId) {
-              const wardens = await recipientResolver.resolveWardensForHostel(studentInfo.hostelId);
-              for (const warden of wardens) {
-                const wardenChannels = await this.getEnabledChannels('ABSENCE_ALERT', 'WARDEN');
-                if (wardenChannels.length > 0) {
+              // Notify Student
+              if (studentInfo.user?._id) {
+                const studentChannels = await this.getEnabledChannels('ABSENCE_ALERT', 'STUDENT');
+                if (studentChannels.length > 0) {
                   await this.trigger({
                     type: 'ABSENCE_ALERT',
-                    channels: wardenChannels,
-                    recipientId: warden.userId,
-                    recipientRole: 'WARDEN',
-                    recipientAddress: warden.phone,
-                    payload: {
-                      ...absencePayload,
-                      hostelName: studentInfo.hostelName,
-                    },
-                  });
+                    channels: studentChannels,
+                    recipientId: studentInfo.user._id,
+                    recipientRole: 'STUDENT',
+                    recipientAddress: studentInfo.email,
+                    payload: absencePayload,
+                  }).catch(() => {});
                 }
               }
-            }
-          } catch (studentErr) {}
-        })
-      );
-    }
+
+              // Notify Parent
+              if (parentInfo) {
+                let parentChannels = await this.getEnabledChannels('ABSENCE_ALERT', 'PARENT');
+
+                if (!parentInfo.optIn) {
+                  parentChannels = parentChannels.filter((c) => c !== 'WHATSAPP');
+                }
+
+                if (parentChannels.length > 0) {
+                  await this.trigger({
+                    type: 'ABSENCE_ALERT',
+                    channels: parentChannels,
+                    recipientId: parentInfo.parentId,
+                    recipientRole: 'PARENT',
+                    recipientAddress: parentInfo.whatsappNumber || parentInfo.phone,
+                    payload: absencePayload,
+                  }).catch(() => {});
+                }
+              }
+
+              // Notify Hostel Wardens
+              if (studentInfo.hostelId) {
+                const wardens = await recipientResolver.resolveWardensForHostel(studentInfo.hostelId);
+                for (const warden of wardens) {
+                  const wardenChannels = await this.getEnabledChannels('ABSENCE_ALERT', 'WARDEN');
+                  if (wardenChannels.length > 0) {
+                    await this.trigger({
+                      type: 'ABSENCE_ALERT',
+                      channels: wardenChannels,
+                      recipientId: warden.userId,
+                      recipientRole: 'WARDEN',
+                      recipientAddress: warden.phone,
+                      payload: {
+                        ...absencePayload,
+                        hostelName: studentInfo.hostelName,
+                      },
+                    }).catch(() => {});
+                  }
+                }
+              }
+            } catch (studentErr) {}
+          })
+        );
+      }
+    });
   }
 
   /**
